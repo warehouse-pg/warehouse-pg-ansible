@@ -1,0 +1,73 @@
+---
+
+# Variables consumed by this Playbook:
+#
+# These are shared between the warehouse-pg role (deploy) and the
+# warehouse-pg-cluster-data role (snapshot). Defaults are defined inside
+# each role's defaults/main.yml. Override them by uncommenting the
+# `vars:` blocks on the plays below, by setting them in inventory /
+# group_vars / host_vars, or via -e on the command line.
+#
+#   WHPG_UNIX_USER   Unix user that owns the WarehousePG installation
+#                    and receives the cluster_state files in its home
+#                    directory.
+#                    Default: "gpadmin"
+#   WHPG_UNIX_GROUP  Unix group that owns WarehousePG files and the
+#                    cluster_state files.
+#                    Default: "gpadmin"
+#   greenplum_path   Path to greenplum_path.sh; sourced before running
+#                    psql/gpstate/etc.
+#                    Default: "/usr/local/greenplum-db/greenplum_path.sh"
+#
+# tl;dr: each role must have the same $WHPG_UNIX_USER, $WHPG_UNIX_GROUP
+#        and $greenplum_path setting
+
+
+- name: Prepare all servers for database installation
+  hosts: whpg_clusters
+  become: true
+  tasks:
+    # create the data directory on all hosts
+    # the warehouse-pg role requires that $whpg_data_directory already exists
+    # This is not necessary for production environments
+    - name: Create /data/whpg directory
+      ansible.builtin.file:
+        path: /data/whpg
+        state: directory
+        mode: '0755'
+
+
+- name: Deploy WarehousePG on all clusters
+  hosts: whpg_clusters
+  become: true
+  any_errors_fatal: true
+  # Uncomment to override the shared defaults for this play:
+  # vars:
+  #   WHPG_UNIX_USER: "gpadmin"
+  #   WHPG_UNIX_GROUP: "gpadmin"
+  #   greenplum_path: "/usr/local/greenplum-db/greenplum_path.sh"
+  pre_tasks:
+    - name: Read token from local file
+      set_fact:
+        # use the token defined in the home directory
+        # change this if necessary
+        edb_token: "{{ lookup('file', lookup('env', 'HOME') ~ '/.edb-token') }}"
+        edb_repository: "{{ lookup('file', lookup('env', 'HOME') ~ '/.edb-repository') }}"
+      run_once: true
+  roles:
+    - role: edb-repository
+    - role: warehouse-pg
+
+
+- name: Collect WarehousePG cluster data
+  hosts: whpg_clusters
+  become: true
+  any_errors_fatal: false
+  # Uncomment to override the shared defaults for this play:
+  # vars:
+  #   WHPG_UNIX_USER: "gpadmin"
+  #   WHPG_UNIX_GROUP: "gpadmin"
+  #   greenplum_path: "/usr/local/greenplum-db/greenplum_path.sh"
+  roles:
+    - role: warehouse-pg-cluster-data
+

@@ -1,0 +1,33 @@
+{#-
+  gpexpand input file -- one line per new segment instance.
+  Format: hostname|address|port|datadir|dbid|content|preferred_role
+  Primaries are emitted first for every new host, then mirrors (when enabled).
+  Mirrors use grouped placement: the mirror for the primary on the n-th new
+  host is placed on the ((n+1) mod N)-th new host.
+-#}
+{%- set seg_prefix = 'gpseg' if whpg_seg_prefix == 'default' else whpg_seg_prefix -%}
+{%- set new_hosts = _whpg_new_segments | list -%}
+{%- set seg_num = whpg_seg_num | int -%}
+{%- set p_base = whpg_seg_base_port | int -%}
+{%- set m_base = whpg_seg_mirror_base_port | int -%}
+{%- set start_content = (_whpg_expand_max_content | int) + 1 -%}
+{%- set ns = namespace(dbid=(_whpg_expand_max_dbid | int) + 1, content=start_content, lines=[]) -%}
+{%- for host in new_hosts -%}
+{%-   for i in range(seg_num) -%}
+{%-     set _ = ns.lines.append(host ~ '|' ~ host ~ '|' ~ (p_base + i) ~ '|' ~ whpg_segment_data_directory ~ '/' ~ seg_prefix ~ ns.content ~ '|' ~ ns.dbid ~ '|' ~ ns.content ~ '|p') -%}
+{%-     set ns.dbid = ns.dbid + 1 -%}
+{%-     set ns.content = ns.content + 1 -%}
+{%-   endfor -%}
+{%- endfor -%}
+{%- if _whpg_expand_has_mirrors | bool and (new_hosts | length) >= 2 -%}
+{%-   set ns.content = start_content -%}
+{%-   for host_idx in range(new_hosts | length) -%}
+{%-     set mirror_host = new_hosts[(host_idx + 1) % (new_hosts | length)] -%}
+{%-     for i in range(seg_num) -%}
+{%-       set _ = ns.lines.append(mirror_host ~ '|' ~ mirror_host ~ '|' ~ (m_base + i) ~ '|' ~ whpg_segment_mirror_directory ~ '/' ~ seg_prefix ~ ns.content ~ '|' ~ ns.dbid ~ '|' ~ ns.content ~ '|m') -%}
+{%-       set ns.dbid = ns.dbid + 1 -%}
+{%-       set ns.content = ns.content + 1 -%}
+{%-     endfor -%}
+{%-   endfor -%}
+{%- endif -%}
+{{ ns.lines | join('\n') }}

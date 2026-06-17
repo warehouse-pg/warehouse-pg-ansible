@@ -1,0 +1,994 @@
+---
+
+# Snapshot the state of a single WarehousePG cluster.
+#
+# This role first gathers per-host facts on EVERY host in the cluster
+# (filesystem layout under whpg_data_directory, kernel sysctls,
+# NTP/chrony sync state). Non-coordinator hosts then short-circuit via
+# meta: end_host. The coordinator queries the running database,
+# aggregates the per-host facts via hostvars, and writes two snapshot
+# files into the WHPG_UNIX_USER home directory:
+#
+#   - cluster_state_<cluster name>.txt   (human-readable)
+#   - cluster_state_<cluster name>.json  (machine-readable)
+#
+# This role is the framework. New data points should be added to the
+# _cluster_state structure built below and surfaced in the two templates.
+
+# ====================================================================
+# Per-host data gathering (runs on every cluster host)
+# ====================================================================
+
+- name: Gather host facts needed for filesystem analysis
+  ansible.builtin.setup:
+    gather_subset:
+      - mounts
+
+- name: Find segment data directories on this host
+  ansible.builtin.find:
+    paths: "{{ whpg_data_directory }}"
+    file_type: directory
+    recurse: true
+    depth: 3
+    patterns: "gp*"
+  register: _host_segment_dirs_find
+  when: (whpg_data_directory | default('')) | length > 0
+
+# Resolve each data directory to its containing mount via
+# ansible_facts.mounts (longest-prefix match). For each data dir we
+# surface mount, device, fstype, options, and disk-usage numbers.
+- name: Build per-host filesystem entry
+  ansible.builtin.set_fact:
+    _host_filesystem:
+      hostname: "{{ inventory_hostname }}"
+      whpg_role: "{{ whpg_role | default('') }}"
+      whpg_data_directory: "{{ whpg_data_directory | default('') }}"
+      data_directory_mounts: >-
+        {%- set out = [] -%}
+        {%- for d in (_host_segment_dirs_find.files | default([])) | map(attribute='path') | sort | list -%}
+          {%- set best = {'len': -1, 'm': {}} -%}
+          {%- for m in (ansible_facts['mounts'] | default([])) -%}
+            {%- set mp = m.mount -%}
+            {%- if d == mp or d.startswith((mp + '/') if mp != '/' else '/') -%}
+              {%- if (mp | length) > best.len -%}
+                {%- set _ = best.update({'len': mp | length, 'm': m}) -%}
+              {%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {%- set match = best.m -%}
+          {%- set total = (match.size_total | default(0)) | int -%}
+          {%- set avail = (match.size_available | default(0)) | int -%}
+          {%- set used  = total - avail -%}
+          {%- set _ = out.append({
+                'path': d,
+                'mount': match.mount | default(''),
+                'device': match.device | default(''),
+                'fstype': match.fstype | default(''),
+                'options': match.options | default(''),
+                'size_total_bytes': total,
+                'size_available_bytes': avail,
+                'size_used_bytes': used,
+                'size_used_percent': (((used | float) * 100.0 / (total | float)) | round(1)) if total > 0 else 0,
+              }) -%}
+        {%- endfor -%}
+        {{ out }}
+
+# WarehousePG-recommended kernel knobs. Some may not exist on every
+# kernel; failed_when: false keeps the run going if /proc/sys entries
+# are missing.
+- name: Read recommended sysctls on this host
+  ansible.builtin.slurp:
+    src: "/proc/sys/{{ item | regex_replace('\\.', '/') }}"
+  register: _host_sysctls_raw
+  loop:
+    - kernel.shmmax
+    - kernel.shmall
+    - kernel.shmmni
+    - kernel.sem
+    - kernel.msgmax
+    - kernel.msgmnb
+    - kernel.msgmni
+    - net.core.rmem_default
+    - net.core.rmem_max
+    - net.core.wmem_default
+    - net.core.wmem_max
+    - net.core.netdev_max_backlog
+    - net.core.somaxconn
+    - net.ipv4.tcp_max_syn_backlog
+    - net.ipv4.tcp_tw_reuse
+    - net.ipv4.tcp_fin_timeout
+    - net.ipv4.ip_local_port_range
+    - net.ipv4.tcp_keepalive_time
+    - net.ipv4.tcp_keepalive_intvl
+    - net.ipv4.tcp_keepalive_probes
+    - net.ipv4.tcp_syncookies
+    - net.ipv4.tcp_rmem
+    - net.ipv4.tcp_wmem
+    - fs.file-max
+    - fs.aio-max-nr
+    - fs.nr_open
+    - vm.dirty_ratio
+    - vm.dirty_background_ratio
+    - vm.dirty_expire_centisecs
+    - vm.dirty_writeback_centisecs
+    - vm.zone_reclaim_mode
+    - vm.min_free_kbytes
+  failed_when: false
+
+- name: Build per-host sysctls map
+  ansible.builtin.set_fact:
+    _host_sysctls: >-
+      {{ _host_sysctls | default({})
+         | combine({item.item: ((item.content | b64decode | trim)
+                                if (item.content is defined) else null)}) }}
+  loop: "{{ _host_sysctls_raw.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Probe chronyc tracking on this host
+  ansible.builtin.command:
+    cmd: chronyc tracking
+  register: _chronyc_tracking
+  changed_when: false
+  failed_when: false
+
+- name: Probe timedatectl show on this host
+  ansible.builtin.command:
+    cmd: timedatectl show
+  register: _timedatectl_show
+  changed_when: false
+  failed_when: false
+
+- name: Build per-host time sync state
+  ansible.builtin.set_fact:
+    _host_time_sync:
+      hostname: "{{ inventory_hostname }}"
+      chronyc_rc: "{{ _chronyc_tracking.rc | default(-1) }}"
+      chronyc_stdout: "{{ _chronyc_tracking.stdout | default('') }}"
+      timedatectl_rc: "{{ _timedatectl_show.rc | default(-1) }}"
+      timedatectl_stdout: "{{ _timedatectl_show.stdout | default('') }}"
+      synchronized: >-
+        {{ ('NTPSynchronized=yes' in (_timedatectl_show.stdout | default('')))
+           or ('Leap status     : Normal' in (_chronyc_tracking.stdout | default(''))) }}
+
+# ====================================================================
+# Coordinator-only data gathering
+# ====================================================================
+
+- name: End play on hosts that are not the cluster coordinator
+  ansible.builtin.meta: end_host
+  when: (whpg_role | default('')) != 'coordinator'
+
+- name: Resolve cluster group name
+  ansible.builtin.set_fact:
+    _cluster_group: "cluster_{{ cluster_name }}"
+
+- name: Assert cluster group exists in inventory
+  ansible.builtin.assert:
+    that:
+      - _cluster_group in groups
+    fail_msg: "Group '{{ _cluster_group }}' not found under whpg_clusters children."
+
+- name: Look up WHPG_UNIX_USER home directory
+  ansible.builtin.user:
+    name: "{{ WHPG_UNIX_USER }}"
+    state: present
+  register: _whpg_user_info
+  check_mode: true
+  changed_when: false
+
+- name: Build output file paths
+  ansible.builtin.set_fact:
+    _cluster_state_txt: "{{ _whpg_user_info.home }}/cluster_state_{{ cluster_name }}.txt"
+    _cluster_state_json: "{{ _whpg_user_info.home }}/cluster_state_{{ cluster_name }}.json"
+
+# Aggregate the per-host facts (set above on every cluster host) via
+# hostvars. Each per-host dict was tagged with `hostname`, so we can
+# just collect them.
+- name: Aggregate per-host facts from cluster hosts
+  ansible.builtin.set_fact:
+    _per_host_filesystems: >-
+      {{ groups[_cluster_group]
+         | map('extract', hostvars, '_host_filesystem')
+         | select('mapping')
+         | list
+         | sort(attribute='hostname') }}
+    _per_host_sysctls: >-
+      {%- set out = {} -%}
+      {%- for h in groups[_cluster_group] -%}
+        {%- set _ = out.update({h: (hostvars[h]._host_sysctls | default({}))}) -%}
+      {%- endfor -%}
+      {{ out }}
+    _per_host_time_sync: >-
+      {{ groups[_cluster_group]
+         | map('extract', hostvars, '_host_time_sync')
+         | select('mapping')
+         | list
+         | sort(attribute='hostname') }}
+
+# Inventory the existing cluster files. Hostfiles are discovered with
+# `find` (so any hostfile produced by warehouse-pg, including the
+# expand one, is picked up). The cluster_state output files are always
+# listed even when they don't exist yet -- the stat captures the state
+# *before* this role writes them.
+- name: Find existing cluster hostfiles for this cluster
+  ansible.builtin.find:
+    paths: "{{ _whpg_user_info.home }}"
+    patterns: "cluster_hostfile_*_{{ cluster_name }}"
+    file_type: file
+  register: _hostfiles_find
+
+- name: Stat cluster_state output files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: _cluster_state_files_stat
+  loop:
+    - "{{ _cluster_state_txt }}"
+    - "{{ _cluster_state_json }}"
+
+- name: Initialize files inventory
+  ansible.builtin.set_fact:
+    _files_hostfiles: []
+    _files_cluster_state: []
+
+- name: Build hostfile metadata
+  ansible.builtin.set_fact:
+    _files_hostfiles: "{{ _files_hostfiles + [_entry] }}"
+  vars:
+    _entry:
+      path: "{{ item.path }}"
+      size: "{{ item.size | int }}"
+      mtime: "{{ item.mtime | int }}"
+      mtime_iso: "{{ '%Y-%m-%dT%H:%M:%SZ' | strftime(item.mtime, utc=true) }}"
+  loop: "{{ _hostfiles_find.files | sort(attribute='path') }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Build cluster_state file metadata
+  ansible.builtin.set_fact:
+    _files_cluster_state: "{{ _files_cluster_state + [_entry] }}"
+  vars:
+    _ext: "{{ item.item.split('.')[-1] }}"
+    _base: "{{ item.item[:-(_ext | length + 1)] }}"
+    _ts: "{{ ('%Y-%m-%d_%H%M%S' | strftime(item.stat.mtime, utc=true)) if item.stat.exists else '' }}"
+    _entry:
+      path: "{{ item.item }}"
+      exists: "{{ item.stat.exists | bool }}"
+      size: "{{ (item.stat.size | default(0)) | int }}"
+      mtime: "{{ (item.stat.mtime | default(0)) | int }}"
+      mtime_iso: "{{ ('%Y-%m-%dT%H:%M:%SZ' | strftime(item.stat.mtime, utc=true)) if item.stat.exists else '' }}"
+      renamed_to: "{{ (_base ~ '_' ~ _ts ~ '.' ~ _ext) if item.stat.exists else '' }}"
+  loop: "{{ _cluster_state_files_stat.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Query database version string
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc 'SELECT version();'
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _cluster_version_raw
+  changed_when: false
+
+- name: Query gp_segment_configuration as JSON
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc "SELECT coalesce(json_agg(row_to_json(s) ORDER BY s.content, s.role), '[]'::json)::text FROM (SELECT dbid, content, role, preferred_role, mode, status, port, hostname, address, datadir FROM gp_segment_configuration) s;"
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _cluster_segconfig_raw
+  changed_when: false
+
+- name: Parse gp_segment_configuration JSON
+  ansible.builtin.set_fact:
+    _segconfig: "{{ _cluster_segconfig_raw.stdout | from_json }}"
+
+# Non-default GUCs: every pg_settings row whose current value differs
+# from the compiled-in default (boot_val) AND whose source isn't the
+# compiled default or an internal override. The setting <> boot_val
+# check is what actually matters: a GUC can be explicitly written to
+# postgresql.conf with the same value as the default (gpconfig does
+# this for several GUCs) -- pg_settings.source would then be
+# 'configuration file' but the value is unchanged, so we filter it out.
+# application_name is also excluded; it is always overwritten per
+# session (psql sets it to 'psql', etc.) and never useful here.
+- name: Query non-default GUCs from pg_settings
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc "SELECT coalesce(json_agg(row_to_json(s) ORDER BY s.name), '[]'::json)::text FROM (SELECT name, setting, unit, source, sourcefile, sourceline, boot_val, reset_val, vartype, category FROM pg_settings WHERE source NOT IN ('default', 'override') AND name <> 'application_name' AND setting IS DISTINCT FROM boot_val) s;"
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _cluster_gucs_raw
+  changed_when: false
+
+- name: Parse non-default GUCs JSON
+  ansible.builtin.set_fact:
+    _gucs_non_default: "{{ _cluster_gucs_raw.stdout | from_json }}"
+
+# Tablespaces: pg_tablespace joined to pg_roles for the owner name plus
+# pg_tablespace_location() for the coordinator-visible path. The
+# per-segment paths come from gp_tablespace_location(), which is
+# EXECUTE ON COORDINATOR and can't be invoked as a correlated subquery
+# from an outer query -- so we query the segment locations separately
+# (one psql call per tablespace, with the oid as a literal) and merge
+# the two result sets in Ansible. pg_default and pg_global return empty
+# strings (they live inside the data directories).
+- name: Query tablespace base attributes
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc "SELECT coalesce(json_agg(row_to_json(t) ORDER BY t.spcname), '[]'::json)::text FROM (SELECT pt.oid::text AS oid, pt.spcname, r.rolname AS owner, pg_tablespace_location(pt.oid) AS coordinator_location, pt.spcoptions, pt.spcacl::text AS acl FROM pg_tablespace pt LEFT JOIN pg_roles r ON r.oid = pt.spcowner) t;"
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _cluster_tablespaces_base_raw
+  changed_when: false
+
+- name: Parse tablespaces base JSON
+  ansible.builtin.set_fact:
+    _tablespaces_base: "{{ _cluster_tablespaces_base_raw.stdout | from_json }}"
+
+- name: Query per-tablespace segment locations
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc "SELECT coalesce(json_agg(json_build_object('gp_segment_id', gp_segment_id, 'location', tblspc_loc) ORDER BY gp_segment_id), '[]'::json)::text FROM gp_tablespace_location({{ item.oid }});"
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _ts_locations_raw
+  loop: "{{ _tablespaces_base }}"
+  loop_control:
+    label: "{{ item.spcname }}"
+  changed_when: false
+
+- name: Merge segment locations into tablespaces
+  ansible.builtin.set_fact:
+    _tablespaces: "{{ _tablespaces | default([]) + [_entry] }}"
+  vars:
+    _entry: "{{ item.item | combine({'segment_locations': (item.stdout | from_json)}) }}"
+  loop: "{{ _ts_locations_raw.results }}"
+  loop_control:
+    label: "{{ item.item.spcname }}"
+
+# Global cluster localization. server_encoding, lc_collate, and lc_ctype
+# are fixed at initdb time. The lc_* / DateStyle / IntervalStyle /
+# TimeZone / default_text_search_config values are GUCs and may be
+# overridden per-database, per-role, or per-session; what we capture
+# here is the cluster-wide default as seen from the postgres database.
+- name: Query global cluster localization
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc "SELECT json_build_object('server_encoding', current_setting('server_encoding'), 'lc_collate', current_setting('lc_collate'), 'lc_ctype', current_setting('lc_ctype'), 'lc_messages', current_setting('lc_messages'), 'lc_monetary', current_setting('lc_monetary'), 'lc_numeric', current_setting('lc_numeric'), 'lc_time', current_setting('lc_time'), 'timezone', current_setting('TimeZone'), 'datestyle', current_setting('DateStyle'), 'intervalstyle', current_setting('IntervalStyle'), 'default_text_search_config', current_setting('default_text_search_config'), 'server_version', current_setting('server_version'), 'server_version_num', current_setting('server_version_num'))::text;"
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _cluster_localization_raw
+  changed_when: false
+
+- name: Parse localization JSON
+  ansible.builtin.set_fact:
+    _localization: "{{ _cluster_localization_raw.stdout | from_json }}"
+
+# Cluster-wide configuration GUCs grouped by topic. current_setting() is
+# strict (errors on unknown GUCs); the second `true` argument
+# (missing_ok) makes the call return NULL for GUCs that don't exist in
+# this build, so the query stays portable across point releases.
+- name: Query cluster configuration GUCs as nested JSON
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tA <<'EOF'
+      SELECT json_build_object(
+        'connections', json_build_object(
+          'max_connections', current_setting('max_connections'),
+          'superuser_reserved_connections', current_setting('superuser_reserved_connections'),
+          'max_prepared_transactions', current_setting('max_prepared_transactions'),
+          'listen_addresses', current_setting('listen_addresses'),
+          'port', current_setting('port'),
+          'unix_socket_directories', current_setting('unix_socket_directories'),
+          'ssl', current_setting('ssl', true),
+          'authentication_timeout', current_setting('authentication_timeout', true)
+        ),
+        'fts', json_build_object(
+          'gp_fts_probe_interval', current_setting('gp_fts_probe_interval', true),
+          'gp_fts_probe_timeout', current_setting('gp_fts_probe_timeout', true),
+          'gp_fts_probe_retries', current_setting('gp_fts_probe_retries', true),
+          'gp_fts_replication_attempt_count', current_setting('gp_fts_replication_attempt_count', true),
+          'gp_fts_mark_mirror_down_grace_period', current_setting('gp_fts_mark_mirror_down_grace_period', true),
+          'gp_segment_connect_timeout', current_setting('gp_segment_connect_timeout', true)
+        ),
+        'interconnect', json_build_object(
+          'gp_interconnect_type', current_setting('gp_interconnect_type', true),
+          'gp_interconnect_proxy_addresses', current_setting('gp_interconnect_proxy_addresses', true),
+          'gp_max_packet_size', current_setting('gp_max_packet_size', true)
+        ),
+        'network_tuning', json_build_object(
+          'tcp_keepalives_idle', current_setting('tcp_keepalives_idle'),
+          'tcp_keepalives_interval', current_setting('tcp_keepalives_interval'),
+          'tcp_keepalives_count', current_setting('tcp_keepalives_count'),
+          'gp_interconnect_queue_depth', current_setting('gp_interconnect_queue_depth', true),
+          'gp_interconnect_snd_queue_depth', current_setting('gp_interconnect_snd_queue_depth', true),
+          'gp_interconnect_transmit_timeout', current_setting('gp_interconnect_transmit_timeout', true),
+          'gp_interconnect_min_rto', current_setting('gp_interconnect_min_rto', true)
+        ),
+        'memory_guc', json_build_object(
+          'shared_buffers', current_setting('shared_buffers'),
+          'work_mem', current_setting('work_mem'),
+          'maintenance_work_mem', current_setting('maintenance_work_mem'),
+          'gp_vmem_protect_limit', current_setting('gp_vmem_protect_limit', true),
+          'gp_vmem_protect_segworker_cache_limit', current_setting('gp_vmem_protect_segworker_cache_limit', true),
+          'runaway_detector_activation_percent', current_setting('runaway_detector_activation_percent', true),
+          'statement_mem', current_setting('statement_mem', true),
+          'max_statement_mem', current_setting('max_statement_mem', true)
+        ),
+        'orca', json_build_object(
+          'optimizer', current_setting('optimizer', true),
+          'optimizer_enable_associativity', current_setting('optimizer_enable_associativity', true),
+          'optimizer_join_arity_for_associativity_commutativity', current_setting('optimizer_join_arity_for_associativity_commutativity', true)
+        ),
+        'workfile', json_build_object(
+          'gp_workfile_compression', current_setting('gp_workfile_compression', true),
+          'gp_workfile_limit_per_query', current_setting('gp_workfile_limit_per_query', true),
+          'gp_workfile_limit_per_segment', current_setting('gp_workfile_limit_per_segment', true),
+          'gp_workfile_limit_files_per_query', current_setting('gp_workfile_limit_files_per_query', true)
+        ),
+        'autoanalyze', json_build_object(
+          'gp_autostats_mode', current_setting('gp_autostats_mode', true),
+          'gp_autostats_on_change_threshold', current_setting('gp_autostats_on_change_threshold', true),
+          'gp_autostats_allow_nonowner', current_setting('gp_autostats_allow_nonowner', true)
+        ),
+        'planner_misc', json_build_object(
+          'gp_enable_global_deadlock_detector', current_setting('gp_enable_global_deadlock_detector', true),
+          'effective_cache_size', current_setting('effective_cache_size'),
+          'gp_segments_for_planner', current_setting('gp_segments_for_planner', true),
+          'default_statistics_target', current_setting('default_statistics_target')
+        )
+      )::text;
+      EOF
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _cluster_config_raw
+  changed_when: false
+
+- name: Parse cluster configuration JSON
+  ansible.builtin.set_fact:
+    _cluster_config: "{{ _cluster_config_raw.stdout | from_json }}"
+
+# OS-level kernel overcommit / swappiness on the coordinator host.
+# These are the knobs WarehousePG asks operators to tune (vm.overcommit_*
+# in particular).
+- name: Slurp OS-level kernel memory tuning files
+  ansible.builtin.slurp:
+    src: "/proc/sys/vm/{{ item }}"
+  register: _os_vm_raw
+  loop:
+    - overcommit_memory
+    - overcommit_ratio
+    - overcommit_kbytes
+    - swappiness
+
+- name: Build OS memory tuning map
+  ansible.builtin.set_fact:
+    _os_memory_tuning: "{{ _os_memory_tuning | default({}) | combine({item.item: (item.content | b64decode | trim)}) }}"
+  loop: "{{ _os_vm_raw.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# Resource management: gp_resource_manager points to the active mode
+# ('queue', 'group', or 'group-v2'). Depending on which mode is active
+# we export either the resource group definitions or the resource queue
+# definitions (or neither).
+- name: Query active resource manager mode
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc "SHOW gp_resource_manager;"
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _resource_manager_raw
+  changed_when: false
+
+- name: Export resource group definitions
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc "SELECT coalesce(json_agg(row_to_json(g) ORDER BY g.groupname), '[]'::json)::text FROM (SELECT groupname, concurrency, cpu_max_percent, cpu_weight, cpuset, memory_quota, min_cost, io_limit FROM gp_toolkit.gp_resgroup_config) g;"
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _resgroups_raw
+  changed_when: false
+  when: (_resource_manager_raw.stdout | trim) in ['group', 'group-v2']
+
+- name: Export resource queue definitions
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc "SELECT coalesce(json_agg(row_to_json(q) ORDER BY q.rsqname), '[]'::json)::text FROM (SELECT q.rsqname, q.rsqcountlimit::text AS active_statements, q.rsqcostlimit::text AS max_cost, (SELECT c.ressetting FROM pg_resqueuecapability c WHERE c.resqueueid = q.oid AND c.restypid = 5) AS memory_limit, (SELECT c.ressetting FROM pg_resqueuecapability c WHERE c.resqueueid = q.oid AND c.restypid = 6) AS priority FROM pg_resqueue q) q;"
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _resqueues_raw
+  changed_when: false
+  when: (_resource_manager_raw.stdout | trim) == 'queue'
+
+- name: Build resource management map
+  ansible.builtin.set_fact:
+    _resource_management:
+      manager: "{{ _resource_manager_raw.stdout | trim }}"
+      groups: "{{ (_resgroups_raw.stdout | from_json) if (_resgroups_raw.stdout is defined) else [] }}"
+      queues: "{{ (_resqueues_raw.stdout | from_json) if (_resqueues_raw.stdout is defined) else [] }}"
+
+# All databases in the cluster (including template0/template1).
+- name: Query all databases
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc "SELECT coalesce(json_agg(row_to_json(d) ORDER BY d.datname), '[]'::json)::text FROM (SELECT d.datname, r.rolname AS owner, pg_encoding_to_char(d.encoding) AS encoding, d.datcollate, d.datctype, d.datistemplate, d.datallowconn, d.datconnlimit, t.spcname AS tablespace, d.datacl::text AS acl FROM pg_database d LEFT JOIN pg_roles r ON r.oid = d.datdba LEFT JOIN pg_tablespace t ON t.oid = d.dattablespace) d;"
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _databases_raw
+  changed_when: false
+
+- name: Parse databases JSON
+  ansible.builtin.set_fact:
+    _databases: "{{ _databases_raw.stdout | from_json }}"
+
+# Copy of pg_hba.conf on the coordinator (comment lines removed).
+- name: Resolve hba_file path
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc "SHOW hba_file;"
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _hba_file_path_raw
+  changed_when: false
+
+- name: Read pg_hba.conf content
+  ansible.builtin.slurp:
+    src: "{{ _hba_file_path_raw.stdout | trim }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _hba_file_content
+
+- name: Build pg_hba.conf line list (comment lines removed)
+  ansible.builtin.set_fact:
+    _pg_hba:
+      path: "{{ _hba_file_path_raw.stdout | trim }}"
+      lines: >-
+        {{ (_hba_file_content.content | b64decode).splitlines()
+           | reject('match', '^\s*#')
+           | list }}
+
+# Available extensions (control files on disk; what could be installed).
+- name: Query available extensions
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc "SELECT coalesce(json_agg(row_to_json(e) ORDER BY e.name), '[]'::json)::text FROM (SELECT name, default_version, installed_version, comment FROM pg_available_extensions) e;"
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _available_extensions_raw
+  changed_when: false
+
+- name: Parse available extensions JSON
+  ansible.builtin.set_fact:
+    _available_extensions: "{{ _available_extensions_raw.stdout | from_json }}"
+
+# Installed extensions per database. Skip databases that don't allow
+# connections (template0, etc.).
+- name: Query installed extensions for each database
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d {{ item.datname | quote }} -h localhost -tAc "SELECT coalesce(json_agg(row_to_json(e) ORDER BY e.extname), '[]'::json)::text FROM (SELECT extname, extversion FROM pg_extension) e;"
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _ext_per_db_raw
+  loop: "{{ _databases }}"
+  loop_control:
+    label: "{{ item.datname }}"
+  when: item.datallowconn | bool
+  changed_when: false
+
+- name: Build per-database installed extensions map
+  ansible.builtin.set_fact:
+    _installed_extensions: "{{ _installed_extensions | default({}) | combine({item.item.datname: (item.stdout | from_json)}) }}"
+  loop: "{{ _ext_per_db_raw.results }}"
+  loop_control:
+    label: "{{ item.item.datname }}"
+  when: not (item.skipped | default(false))
+
+- name: Derive coordinator / standby / segment / mirror rows
+  ansible.builtin.set_fact:
+    _coordinator_row: >-
+      {{ (_segconfig | selectattr('content', 'equalto', -1)
+                    | selectattr('role', 'equalto', 'p')
+                    | list | first) | default({}) }}
+    _standby_row: >-
+      {{ (_segconfig | selectattr('content', 'equalto', -1)
+                    | selectattr('role', 'equalto', 'm')
+                    | list | first) | default({}) }}
+    _primary_segments: >-
+      {{ _segconfig | rejectattr('content', 'equalto', -1)
+                    | selectattr('role', 'equalto', 'p')
+                    | list }}
+    _mirror_segments: >-
+      {{ _segconfig | rejectattr('content', 'equalto', -1)
+                    | selectattr('role', 'equalto', 'm')
+                    | list }}
+
+# ====================================================================
+# Additional live-cluster queries that depend on the segment topology
+# being known (e.g. need the coordinator's data_directory).
+# ====================================================================
+
+# Per-segment disk free as the cluster sees it (this is the MPP-aware
+# counterpart to df running on each host above).
+- name: Query gp_toolkit.gp_disk_free
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc "SELECT coalesce(json_agg(row_to_json(d) ORDER BY d.dfsegment), '[]'::json)::text FROM (SELECT * FROM gp_toolkit.gp_disk_free) d;"
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _gp_disk_free_raw
+  changed_when: false
+  failed_when: false
+
+- name: Parse gp_disk_free JSON
+  ansible.builtin.set_fact:
+    _gp_disk_free: >-
+      {{ (_gp_disk_free_raw.stdout | from_json)
+         if (_gp_disk_free_raw.rc | default(1)) == 0 and (_gp_disk_free_raw.stdout | default('')) | length > 0
+         else [] }}
+
+# Mirror & coordinator-standby replication state. gp_stat_replication is
+# Greenplum's MPP-aware view -- one row per active replication target
+# across the cluster (coordinator->standby plus every primary->mirror).
+- name: Query gp_stat_replication
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc "SELECT coalesce(json_agg(row_to_json(r) ORDER BY r.gp_segment_id, r.pid), '[]'::json)::text FROM (SELECT gp_segment_id, pid, application_name, state, sent_lsn::text, write_lsn::text, flush_lsn::text, replay_lsn::text, write_lag::text, flush_lag::text, replay_lag::text, sync_state, sync_priority FROM gp_stat_replication) r;"
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _gp_stat_replication_raw
+  changed_when: false
+  failed_when: false
+
+- name: Query pg_replication_slots (coordinator side)
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc "SELECT coalesce(json_agg(row_to_json(s) ORDER BY s.slot_name), '[]'::json)::text FROM (SELECT slot_name, slot_type, database, active, restart_lsn::text, confirmed_flush_lsn::text FROM pg_replication_slots) s;"
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _replication_slots_raw
+  changed_when: false
+  failed_when: false
+
+# gpstate -e returns rows for segments that aren't in their preferred
+# configuration. We just capture the raw text -- parsing it tightly is
+# brittle, but the operator-level output is what people look at.
+- name: Run gpstate -e to surface segments in non-default state
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      export COORDINATOR_DATA_DIRECTORY={{ (_coordinator_row.datadir | default('')) | quote }}
+      gpstate -e 2>&1 | sed -n '/Segments with Primary and Mirror Roles Switched/,$p'
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _gpstate_e_raw
+  changed_when: false
+  failed_when: false
+
+- name: Build replication / FTS state
+  ansible.builtin.set_fact:
+    _replication:
+      gp_stat_replication: >-
+        {{ (_gp_stat_replication_raw.stdout | from_json)
+           if (_gp_stat_replication_raw.rc | default(1)) == 0 and (_gp_stat_replication_raw.stdout | default('')) | length > 0
+           else [] }}
+      pg_replication_slots: >-
+        {{ (_replication_slots_raw.stdout | from_json)
+           if (_replication_slots_raw.rc | default(1)) == 0 and (_replication_slots_raw.stdout | default('')) | length > 0
+           else [] }}
+      gpstate_e: "{{ _gpstate_e_raw.stdout | default('') }}"
+
+# Resource manager runtime status. Definitions came from earlier tasks;
+# these views show the live counters (running, queued, executed,
+# memory/cpu usage).
+- name: Query gp_toolkit.gp_resgroup_status
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc "SELECT coalesce(json_agg(row_to_json(s)), '[]'::json)::text FROM gp_toolkit.gp_resgroup_status s;"
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _resgroup_status_raw
+  changed_when: false
+  failed_when: false
+  when: (_resource_manager_raw.stdout | trim) in ['group', 'group-v2']
+
+- name: Query gp_toolkit.gp_resqueue_status
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc "SELECT coalesce(json_agg(row_to_json(s)), '[]'::json)::text FROM gp_toolkit.gp_resqueue_status s;"
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _resqueue_status_raw
+  changed_when: false
+  failed_when: false
+  when: (_resource_manager_raw.stdout | trim) == 'queue'
+
+# These status queries can no-op (when condition false → no stdout key)
+# or run-but-fail (psql errors with failed_when: false → empty stdout,
+# nonzero rc). Both have to collapse to [] instead of feeding from_json
+# an empty string.
+- name: Parse resource manager runtime status
+  ansible.builtin.set_fact:
+    _resgroup_status: >-
+      {{ (_resgroup_status_raw.stdout | from_json)
+         if ((_resgroup_status_raw.rc | default(1)) == 0
+             and ((_resgroup_status_raw.stdout | default('')) | trim | length) > 0)
+         else [] }}
+    _resqueue_status: >-
+      {{ (_resqueue_status_raw.stdout | from_json)
+         if ((_resqueue_status_raw.rc | default(1)) == 0
+             and ((_resqueue_status_raw.stdout | default('')) | trim | length) > 0)
+         else [] }}
+
+- name: Attach resource manager runtime status
+  ansible.builtin.set_fact:
+    _resource_management: >-
+      {{ _resource_management
+         | combine({
+             'groups_status': _resgroup_status,
+             'queues_status': _resqueue_status,
+           }) }}
+
+# GUC consistency spot-check via gpconfig -s. gpconfig prints
+# coordinator vs segment values and notes whether they're consistent.
+# Capture stdout for a curated list of GUCs that operationally matter
+# most and parse the three pieces (coordinator value, segment value,
+# consistency flag).
+- name: Run gpconfig -s for critical GUCs
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      export COORDINATOR_DATA_DIRECTORY={{ (_coordinator_row.datadir | default('')) | quote }}
+      gpconfig -s {{ item | quote }} 2>&1 || true
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _gpconfig_results
+  loop:
+    - shared_buffers
+    - max_connections
+    - work_mem
+    - maintenance_work_mem
+    - statement_mem
+    - gp_vmem_protect_limit
+    - gp_resource_manager
+    - gp_interconnect_type
+    - gp_max_packet_size
+    - lc_collate
+    - lc_ctype
+    - server_encoding
+    - optimizer
+  changed_when: false
+
+- name: Build GUC consistency map
+  ansible.builtin.set_fact:
+    _gucs_consistency: "{{ _gucs_consistency | default([]) + [_entry] }}"
+  vars:
+    _coord_match: "{{ (item.stdout | default('') | regex_search('Coordinator\\s*value:\\s*(.*)', '\\1') | first) | default('') }}"
+    _seg_match: "{{ (item.stdout | default('') | regex_search('Segment\\s*value:\\s*(.*)', '\\1') | first) | default('') }}"
+    _entry:
+      name: "{{ item.item }}"
+      coordinator_value: "{{ _coord_match | trim }}"
+      segment_value: "{{ _seg_match | trim }}"
+      consistent: "{{ 'Values on all segments are consistent' in (item.stdout | default('')) }}"
+  loop: "{{ _gpconfig_results.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# Cluster identity & lifecycle.
+- name: Query cluster identity
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc "SELECT json_build_object('postmaster_start_time', pg_postmaster_start_time()::text, 'system_identifier', (SELECT system_identifier::text FROM pg_control_system()))::text;"
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _identity_raw
+  changed_when: false
+
+- name: Parse cluster identity
+  ansible.builtin.set_fact:
+    _cluster_identity: "{{ _identity_raw.stdout | from_json }}"
+
+# gpinitsystem_config_<cluster> is the file gpinitsystem was given.
+# Captured raw, JSON-only (the text snapshot would be too noisy).
+- name: Slurp gpinitsystem_config file
+  ansible.builtin.slurp:
+    src: "{{ _whpg_user_info.home }}/gpinitsystem_config_{{ cluster_name }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _gpinitsystem_config_raw
+  failed_when: false
+
+- name: Build gpinitsystem config snapshot
+  ansible.builtin.set_fact:
+    _gpinitsystem_config:
+      path: "{{ _whpg_user_info.home }}/gpinitsystem_config_{{ cluster_name }}"
+      content: >-
+        {{ (_gpinitsystem_config_raw.content | b64decode)
+           if (_gpinitsystem_config_raw.content is defined) else '' }}
+
+# pg_ident.conf, comments stripped (same treatment as pg_hba.conf).
+- name: Resolve ident_file path
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc "SHOW ident_file;"
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _ident_file_path_raw
+  changed_when: false
+
+- name: Read pg_ident.conf
+  ansible.builtin.slurp:
+    src: "{{ _ident_file_path_raw.stdout | trim }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _ident_file_content
+  failed_when: false
+
+- name: Build pg_ident.conf line list
+  ansible.builtin.set_fact:
+    _pg_ident:
+      path: "{{ _ident_file_path_raw.stdout | trim }}"
+      lines: >-
+        {{ ((_ident_file_content.content | b64decode).splitlines()
+            | reject('match', '^\s*#')
+            | list)
+           if (_ident_file_content.content is defined) else [] }}
+
+# pg_default_acl: per-role/schema defaults for newly-created objects.
+- name: Query pg_default_acl
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc "SELECT coalesce(json_agg(row_to_json(a)), '[]'::json)::text FROM (SELECT r.rolname AS role, n.nspname AS schema, da.defaclobjtype::text AS object_type, da.defaclacl::text AS acl FROM pg_default_acl da LEFT JOIN pg_roles r ON r.oid = da.defaclrole LEFT JOIN pg_namespace n ON n.oid = da.defaclnamespace) a;"
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _default_acl_raw
+  changed_when: false
+
+- name: Parse pg_default_acl
+  ansible.builtin.set_fact:
+    _default_acl: "{{ _default_acl_raw.stdout | from_json }}"
+
+# Foreign data wrappers, foreign servers, user mappings.
+- name: Query foreign data wrappers / servers / user mappings
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tA <<'EOF'
+      SELECT json_build_object(
+        'wrappers', (SELECT coalesce(json_agg(row_to_json(w) ORDER BY w.fdwname), '[]'::json) FROM (SELECT f.fdwname, r.rolname AS owner, f.fdwhandler::regproc::text AS handler, f.fdwvalidator::regproc::text AS validator, f.fdwoptions FROM pg_foreign_data_wrapper f LEFT JOIN pg_roles r ON r.oid = f.fdwowner) w),
+        'servers', (SELECT coalesce(json_agg(row_to_json(s) ORDER BY s.srvname), '[]'::json) FROM (SELECT s.srvname, r.rolname AS owner, f.fdwname AS fdw, s.srvtype, s.srvversion, s.srvoptions FROM pg_foreign_server s LEFT JOIN pg_foreign_data_wrapper f ON f.oid = s.srvfdw LEFT JOIN pg_roles r ON r.oid = s.srvowner) s),
+        'user_mappings', (SELECT coalesce(json_agg(row_to_json(u) ORDER BY u.srvname, u.usename), '[]'::json) FROM (SELECT s.srvname, COALESCE(r.rolname, 'PUBLIC') AS usename, m.umoptions FROM pg_user_mapping m LEFT JOIN pg_foreign_server s ON s.oid = m.umserver LEFT JOIN pg_roles r ON r.oid = m.umuser) u)
+      )::text;
+      EOF
+    executable: /bin/bash
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _fdw_raw
+  changed_when: false
+
+- name: Parse FDW catalog
+  ansible.builtin.set_fact:
+    _fdw: "{{ _fdw_raw.stdout | from_json }}"
+
+- name: Build cluster_state data structure
+  ansible.builtin.set_fact:
+    _cluster_state:
+      cluster_name: "{{ cluster_name }}"
+      scanned_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+      version: "{{ _cluster_version_raw.stdout | trim }}"
+      localization: "{{ _localization }}"
+      coordinator:
+        hostname: "{{ _coordinator_row.hostname | default('') }}"
+        port: "{{ (_coordinator_row.port | default(0)) | int }}"
+        datadir: "{{ _coordinator_row.datadir | default('') }}"
+      standby:
+        present: "{{ (_standby_row | length) > 0 }}"
+        hostname: "{{ _standby_row.hostname | default('') }}"
+        port: "{{ (_standby_row.port | default(0)) | int }}"
+        datadir: "{{ _standby_row.datadir | default('') }}"
+      segments:
+        count: "{{ _primary_segments | length }}"
+        list: "{{ _primary_segments }}"
+      mirrors:
+        present: "{{ (_mirror_segments | length) > 0 }}"
+        count: "{{ _mirror_segments | length }}"
+        list: "{{ _mirror_segments }}"
+      all_segment_configuration: "{{ _segconfig }}"
+      gucs:
+        non_default_count: "{{ _gucs_non_default | length }}"
+        non_default: "{{ _gucs_non_default }}"
+      tablespaces:
+        count: "{{ _tablespaces | length }}"
+        list: "{{ _tablespaces }}"
+      connections: "{{ _cluster_config.connections }}"
+      fts: "{{ _cluster_config.fts }}"
+      interconnect: "{{ _cluster_config.interconnect }}"
+      network_tuning: "{{ _cluster_config.network_tuning }}"
+      memory:
+        guc: "{{ _cluster_config.memory_guc }}"
+        os: "{{ _os_memory_tuning }}"
+      orca: "{{ _cluster_config.orca }}"
+      workfile: "{{ _cluster_config.workfile }}"
+      autoanalyze: "{{ _cluster_config.autoanalyze }}"
+      planner_misc: "{{ _cluster_config.planner_misc }}"
+      gucs_consistency: "{{ _gucs_consistency | default([]) }}"
+      cluster_identity: "{{ _cluster_identity }}"
+      gpinitsystem_config: "{{ _gpinitsystem_config }}"
+      resource_management: "{{ _resource_management }}"
+      databases:
+        count: "{{ _databases | length }}"
+        list: "{{ _databases }}"
+      pg_hba: "{{ _pg_hba }}"
+      pg_ident: "{{ _pg_ident }}"
+      pg_default_acl: "{{ _default_acl }}"
+      fdw: "{{ _fdw }}"
+      extensions:
+        available:
+          count: "{{ _available_extensions | length }}"
+          list: "{{ _available_extensions }}"
+        installed_by_database: "{{ _installed_extensions | default({}) }}"
+      per_host:
+        filesystems: "{{ _per_host_filesystems }}"
+        sysctls: "{{ _per_host_sysctls }}"
+        time_sync: "{{ _per_host_time_sync }}"
+      gp_disk_free: "{{ _gp_disk_free }}"
+      replication: "{{ _replication }}"
+      files:
+        hostfiles: "{{ _files_hostfiles }}"
+        cluster_state: "{{ _files_cluster_state }}"
+
+# Archive any pre-existing cluster_state files by renaming them with
+# their last-changed mtime (UTC) baked into the filename, e.g.:
+#   cluster_state_test.txt -> cluster_state_test_2026-06-05_142345.txt
+# The new files are then written below.
+- name: Archive existing cluster_state output files by mtime
+  ansible.builtin.command:
+    cmd: mv -- {{ item.path | quote }} {{ item.renamed_to | quote }}
+  loop: "{{ _files_cluster_state }}"
+  loop_control:
+    label: "{{ item.renamed_to }}"
+  when: item.exists | bool
+  changed_when: true
+
+- name: Write cluster_state text file
+  ansible.builtin.template:
+    src: cluster_state.txt.j2
+    dest: "{{ _cluster_state_txt }}"
+    owner: "{{ WHPG_UNIX_USER }}"
+    group: "{{ WHPG_UNIX_GROUP }}"
+    mode: "0400"
+
+- name: Write cluster_state JSON file
+  ansible.builtin.template:
+    src: cluster_state.json.j2
+    dest: "{{ _cluster_state_json }}"
+    owner: "{{ WHPG_UNIX_USER }}"
+    group: "{{ WHPG_UNIX_GROUP }}"
+    mode: "0400"
+
+- name: Report written cluster_state files
+  ansible.builtin.debug:
+    msg: >-
+      Wrote cluster_state for '{{ cluster_name }}':
+      {{ _cluster_state_txt }}, {{ _cluster_state_json }}

@@ -1,0 +1,30 @@
+---
+
+- name: Run pre-flight checks
+  ansible.builtin.import_tasks: 01-pre-flight-checks.yml
+
+- name: Create Unix user and group
+  ansible.builtin.import_tasks: 02-unix-user.yml
+
+- name: Build cluster hostfiles
+  ansible.builtin.import_tasks: 03-hostfiles.yml
+
+- name: Configure operating system prerequisites
+  ansible.builtin.import_tasks: 04-os.yml
+
+- name: Exchange SSH keys across cluster
+  ansible.builtin.import_tasks: 05-ssh-keyexchange.yml
+
+- name: Install WarehousePG packages
+  ansible.builtin.import_tasks: 06-install.yml
+
+- name: Initialize WarehousePG database
+  ansible.builtin.import_tasks: 07-initialize-database.yml
+  when: whpg_role == 'coordinator'
+
+- name: Install WarehousePG extensions
+  ansible.builtin.import_tasks: 08-extensions.yml
+
+- name: Expand WarehousePG
+  ansible.builtin.import_tasks: 09-expand-cluster.yml
+  when: whpg_role == 'coordinator' and whpg_expand_db | default(false)

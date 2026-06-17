@@ -1,0 +1,265 @@
+---
+
+# the following facts will be checked, and variables set:
+#
+# - there must be exactly one coordinator
+# - the coordinator can't (currently) change
+#   $_cluster_operation_coordinator is set to "change-coordinator"
+#.  the Playbook fails with an error
+#
+# - there must be none or one standby
+# - the name of a previously set standby can't (currently) change
+#   $_cluster_operation_standby is set to "change-standby"
+#.  the Playbook fails with an error
+# - if there was no standby defined previously
+#.  $_cluster_operation_standby is set to "add-standby"
+# - if there was a standby defined previously
+#.  $_cluster_operation_standby is set to "remove-standby"
+#
+# - previously defined segments can't be removed
+#.  $_cluster_operation_segments is set to "remove-segments"
+#.  the Playbook fails with an error
+# - new segment hosts can be added
+#.  $_cluster_operation_segments is set to "expand-cluster"
+
+# expand-cluster must check the current configuration
+# the variable is not reliable
+
+- name: Resolve cluster group name
+  ansible.builtin.set_fact:
+    _cluster_group: "cluster_{{ cluster_name }}"
+
+- name: Assert cluster group exists in inventory
+  ansible.builtin.assert:
+    that:
+      - _cluster_group in groups
+    fail_msg: "Group '{{ _cluster_group }}' not found under whpg_clusters children."
+
+- name: Collect cluster hosts by role
+  ansible.builtin.set_fact:
+    _cluster_hosts_all: "{{ groups[_cluster_group] }}"
+    _cluster_hosts_coordinator: >-
+      {{ groups[_cluster_group]
+         | map('extract', hostvars)
+         | selectattr('whpg_role', 'equalto', 'coordinator')
+         | map(attribute='inventory_hostname')
+         | list }}
+    _cluster_hosts_standby: >-
+      {{ groups[_cluster_group]
+         | map('extract', hostvars)
+         | selectattr('whpg_role', 'equalto', 'standby')
+         | map(attribute='inventory_hostname')
+         | list }}
+    _cluster_hosts_segments: >-
+      {{ groups[_cluster_group]
+         | map('extract', hostvars)
+         | selectattr('whpg_role', 'equalto', 'segment')
+         | map(attribute='inventory_hostname')
+         | list }}
+
+- name: Set host count variables
+  ansible.builtin.set_fact:
+    _cluster_count_coordinator: "{{ _cluster_hosts_coordinator | length }}"
+    _cluster_count_standby: "{{ _cluster_hosts_standby | length }}"
+    _cluster_count_segments: "{{ _cluster_hosts_segments | length }}"
+
+- name: Fail if no coordinator is defined
+  ansible.builtin.fail:
+    msg: "No 'coordinator' host is defined in group '{{ _cluster_group }}'. Exactly one is required."
+  when: _cluster_count_coordinator | int == 0
+
+- name: Fail if more than one coordinator is defined
+  ansible.builtin.fail:
+    msg: "More than one 'coordinator' host ({{ _cluster_count_coordinator }}) is defined in group '{{ _cluster_group }}'. Only one is allowed."
+  when: _cluster_count_coordinator | int > 1
+
+- name: Fail if more than one standby is defined
+  ansible.builtin.fail:
+    msg: "More than one 'standby' host ({{ _cluster_count_standby }}) is defined in group '{{ _cluster_group }}'. At most one is allowed."
+  when: _cluster_count_standby | int > 1
+
+- name: Look up WHPG_UNIX_USER home directory
+  ansible.builtin.user:
+    name: "{{ WHPG_UNIX_USER }}"
+    state: present
+  register: _whpg_user_info
+  check_mode: true
+  changed_when: false
+
+- name: Set hostfile path variables
+  ansible.builtin.set_fact:
+    hostfile_all: "{{ _whpg_user_info.home }}/cluster_hostfile_all_{{ cluster_name }}"
+    hostfile_coordinator: "{{ _whpg_user_info.home }}/cluster_hostfile_coordinator_{{ cluster_name }}"
+    hostfile_standby: "{{ _whpg_user_info.home }}/cluster_hostfile_standby_{{ cluster_name }}"
+    hostfile_segments: "{{ _whpg_user_info.home }}/cluster_hostfile_segments_{{ cluster_name }}"
+
+- name: Write cluster_hostfile_all
+  ansible.builtin.copy:
+    dest: "{{ hostfile_all }}"
+    content: "{{ _cluster_hosts_all | sort | join('\n') }}\n"
+    owner: "{{ WHPG_UNIX_USER }}"
+    mode: "0644"
+
+- name: Stat existing cluster hostfiles
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: _existing_hostfiles_stat
+  loop:
+    - "{{ hostfile_coordinator }}"
+    - "{{ hostfile_standby }}"
+    - "{{ hostfile_segments }}"
+
+- name: Read existing cluster_hostfile_coordinator
+  ansible.builtin.slurp:
+    src: "{{ hostfile_coordinator }}"
+  register: _existing_hostfile_coordinator
+  when: _existing_hostfiles_stat.results[0].stat.exists
+
+- name: Read existing cluster_hostfile_standby
+  ansible.builtin.slurp:
+    src: "{{ hostfile_standby }}"
+  register: _existing_hostfile_standby
+  when: _existing_hostfiles_stat.results[1].stat.exists
+
+- name: Read existing cluster_hostfile_segments
+  ansible.builtin.slurp:
+    src: "{{ hostfile_segments }}"
+  register: _existing_hostfile_segments
+  when: _existing_hostfiles_stat.results[2].stat.exists
+
+- name: Initialize cluster operation variables
+  ansible.builtin.set_fact:
+    _cluster_operation_coordinator: ""
+    _cluster_operation_standby: ""
+    _cluster_operation_segments: ""
+
+- name: Detect coordinator change
+  ansible.builtin.set_fact:
+    _cluster_operation_coordinator: "change-coordinator"
+  when:
+    - _existing_hostfiles_stat.results[0].stat.exists
+    - ((_existing_hostfile_coordinator.content | b64decode).splitlines() | first | default('') | trim) != (_cluster_hosts_coordinator | first)
+
+- name: Fail if coordinator has changed
+  ansible.builtin.fail:
+    msg: >-
+      Changing the coordinator is not allowed.
+      Existing coordinator: '{{ (_existing_hostfile_coordinator.content | b64decode).splitlines() | first | default('') | trim }}',
+      requested coordinator: '{{ _cluster_hosts_coordinator | first }}'.
+  when: _cluster_operation_coordinator == "change-coordinator"
+
+- name: Determine previous standby host
+  ansible.builtin.set_fact:
+    _previous_standby: >-
+      {{ ((_existing_hostfile_standby.content | b64decode).splitlines() | first | default('') | trim)
+         if _existing_hostfiles_stat.results[1].stat.exists else '' }}
+
+- name: Determine current standby host
+  ansible.builtin.set_fact:
+    _current_standby: "{{ _cluster_hosts_standby | first | default('') }}"
+
+- name: Mark standby as added
+  ansible.builtin.set_fact:
+    _cluster_operation_standby: "add-standby"
+  when:
+    - _previous_standby | trim == ''
+    - _current_standby != ''
+
+- name: Mark standby as removed
+  ansible.builtin.set_fact:
+    _cluster_operation_standby: "remove-standby"
+  when:
+    - _previous_standby | trim != ''
+    - _current_standby == ''
+
+- name: Mark standby as changed
+  ansible.builtin.set_fact:
+    _cluster_operation_standby: "change-standby"
+  when:
+    - _previous_standby | trim != ''
+    - _current_standby != ''
+    - _previous_standby | trim != _current_standby
+
+- name: Fail if standby has changed
+  ansible.builtin.fail:
+    msg: >-
+      Changing the standby is not allowed.
+      Existing standby: '{{ _previous_standby | trim }}',
+      requested standby: '{{ _current_standby }}'.
+  when: _cluster_operation_standby == "change-standby"
+
+- name: Determine previous segment hosts
+  ansible.builtin.set_fact:
+    _previous_segments: >-
+      {{ ((_existing_hostfile_segments.content | b64decode).splitlines()
+          | map('trim') | reject('equalto', '') | list)
+         if _existing_hostfiles_stat.results[2].stat.exists else [] }}
+
+- name: Determine current segment hosts
+  ansible.builtin.set_fact:
+    _current_segments: "{{ _cluster_hosts_segments }}"
+
+- name: Compute missing segment hosts
+  ansible.builtin.set_fact:
+    _missing_segments: "{{ _previous_segments | difference(_current_segments) }}"
+
+- name: Compute added segment hosts
+  ansible.builtin.set_fact:
+    _added_segments: "{{ _current_segments | difference(_previous_segments) }}"
+
+- name: Mark segments as removed
+  ansible.builtin.set_fact:
+    _cluster_operation_segments: "remove-segments"
+  when:
+    - _existing_hostfiles_stat.results[2].stat.exists
+    - _missing_segments | length > 0
+
+- name: Fail if segments have been removed
+  ansible.builtin.fail:
+    msg: >-
+      Removing segments is not allowed.
+      Missing segment hosts: {{ _missing_segments | join(', ') }}.
+  when: _cluster_operation_segments == "remove-segments"
+
+- name: Mark segments as expanded
+  ansible.builtin.set_fact:
+    _cluster_operation_segments: "expand-cluster"
+  when:
+    - _existing_hostfiles_stat.results[2].stat.exists
+    - _missing_segments | length == 0
+    - _added_segments | length > 0
+
+- name: Write cluster_hostfile_coordinator
+  ansible.builtin.copy:
+    dest: "{{ hostfile_coordinator }}"
+    content: "{{ _cluster_hosts_coordinator | sort | join('\n') }}\n"
+    owner: "{{ WHPG_UNIX_USER }}"
+    mode: "0644"
+
+- name: Write cluster_hostfile_standby
+  ansible.builtin.copy:
+    dest: "{{ hostfile_standby }}"
+    content: "{{ _cluster_hosts_standby | sort | join('\n') }}\n"
+    owner: "{{ WHPG_UNIX_USER }}"
+    mode: "0644"
+  when: _cluster_hosts_standby | length > 0
+
+- name: Remove stale cluster_hostfile_standby when no standby is defined
+  ansible.builtin.file:
+    path: "{{ hostfile_standby }}"
+    state: absent
+  when: _cluster_hosts_standby | length == 0
+
+- name: Write cluster_hostfile_segments
+  ansible.builtin.copy:
+    dest: "{{ hostfile_segments }}"
+    content: "{{ _cluster_hosts_segments | sort | join('\n') }}\n"
+    owner: "{{ WHPG_UNIX_USER }}"
+    mode: "0644"
+  when: _cluster_hosts_segments | length > 0
+
+# The messages are only an estimate
+# It is possible that the Playbook ran multuple times
+# The actual operations will check the current database, not just the hostfiles
+- debug: msg="Standby operation{{':'}} {{ _cluster_operation_standby }}"
+- debug: msg="Segment operation{{':'}} {{ _cluster_operation_segments }}"

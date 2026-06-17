@@ -1,0 +1,117 @@
+---
+
+- name: Find public SSH key files
+  ansible.builtin.find:
+    paths: "{{ _whpg_user_info.home }}/.ssh"
+    patterns: "*.pub"
+  register: _ssh_pub_files
+
+- name: Read public SSH key files
+  ansible.builtin.slurp:
+    src: "{{ item.path }}"
+  loop: "{{ _ssh_pub_files.files }}"
+  register: _ssh_pub_keys_raw
+  loop_control:
+    label: "{{ item.path | basename }}"
+
+- name: Set local public keys fact
+  ansible.builtin.set_fact:
+    _local_pub_keys: >-
+      {{ _ssh_pub_keys_raw.results
+         | map(attribute='content')
+         | map('b64decode')
+         | map('trim')
+         | list }}
+
+- name: Combine public keys from all cluster hosts
+  ansible.builtin.set_fact:
+    _all_pub_keys: >-
+      {{ _cluster_hosts_all
+         | map('extract', hostvars, '_local_pub_keys')
+         | flatten
+         | unique
+         | list }}
+
+- name: Ensure .ssh directory exists
+  ansible.builtin.file:
+    path: "{{ _whpg_user_info.home }}/.ssh"
+    state: directory
+    owner: "{{ WHPG_UNIX_USER }}"
+    group: "{{ WHPG_UNIX_GROUP }}"
+    mode: "0700"
+
+- name: Populate WHPG_UNIX_USER authorized_keys with cluster public keys
+  ansible.builtin.blockinfile:
+    path: "{{ _whpg_user_info.home }}/.ssh/authorized_keys"
+    block: "{{ _all_pub_keys | sort | join('\n') }}"
+    marker: "# {mark} WAREHOUSEPG CLUSTER PUBLIC KEYS"
+    create: true
+    owner: "{{ WHPG_UNIX_USER }}"
+    group: "{{ WHPG_UNIX_GROUP }}"
+    mode: "0600"
+
+- name: Build known_hosts entries from this host's SSH host keys
+  ansible.builtin.shell: |
+    for f in /etc/ssh/ssh_host_*_key.pub; do
+      [ -f "$f" ] || continue
+      awk -v h={{ inventory_hostname | quote }} '{print h, $1, $2}' "$f"
+    done
+  register: _local_host_keys
+  changed_when: false
+
+- name: Combine SSH host keys from all cluster hosts
+  ansible.builtin.set_fact:
+    _all_host_keys: >-
+      {{ _cluster_hosts_all
+         | map('extract', hostvars, ['_local_host_keys', 'stdout_lines'])
+         | flatten
+         | sort
+         | list }}
+
+- name: Populate WHPG_UNIX_USER known_hosts with cluster host keys
+  ansible.builtin.blockinfile:
+    path: "{{ _whpg_user_info.home }}/.ssh/known_hosts"
+    block: "{{ _all_host_keys | join('\n') }}"
+    marker: "# {mark} WAREHOUSEPG CLUSTER HOST KEYS"
+    create: true
+    owner: "{{ WHPG_UNIX_USER }}"
+    group: "{{ WHPG_UNIX_GROUP }}"
+    mode: "0600"
+
+- name: Test passwordless SSH from coordinator/standby to all cluster hosts
+  ansible.builtin.command:
+    cmd: >-
+      ssh
+      -o BatchMode=yes
+      -o PasswordAuthentication=no
+      -o KbdInteractiveAuthentication=no
+      -o PreferredAuthentications=publickey
+      -o StrictHostKeyChecking=yes
+      -o ConnectTimeout=10
+      {{ item }}
+      true
+  become: true
+  become_user: "{{ WHPG_UNIX_USER }}"
+  loop: "{{ _cluster_hosts_all }}"
+  register: _ssh_login_test
+  changed_when: false
+  failed_when: false
+  when: whpg_role in ['coordinator', 'standby']
+
+- name: Collect hosts that failed the passwordless SSH login test
+  ansible.builtin.set_fact:
+    _ssh_login_failed_hosts: >-
+      {{ _ssh_login_test.results
+         | rejectattr('rc', 'equalto', 0)
+         | map(attribute='item')
+         | list }}
+  when: whpg_role in ['coordinator', 'standby']
+
+- name: Fail if any passwordless SSH login from coordinator/standby failed
+  ansible.builtin.fail:
+    msg: >-
+      Passwordless SSH login as {{ WHPG_UNIX_USER }} from {{ inventory_hostname }}
+      failed for the following host(s): {{ _ssh_login_failed_hosts | join(', ') }}
+  when:
+    - whpg_role in ['coordinator', 'standby']
+    - _ssh_login_failed_hosts | length > 0

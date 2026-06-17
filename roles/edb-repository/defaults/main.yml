@@ -1,0 +1,7 @@
+---
+
+edb_token: ""
+edb_repository: "dev"
+# the EDB repository will deny too many parallel requests
+# serialize the operation (only run n operations at a time)
+serial_operations: 1

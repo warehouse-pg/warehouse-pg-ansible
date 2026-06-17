@@ -1,0 +1,10 @@
+---
+
+# Unix user/group that owns the WarehousePG installation.
+# The cluster_state_<cluster name>.{txt,json} files are written into
+# this user's home directory on the coordinator.
+WHPG_UNIX_USER: "gpadmin"
+WHPG_UNIX_GROUP: "gpadmin"
+
+# Path to the greenplum_path.sh sourced before running psql/gpstate/etc.
+greenplum_path: "/usr/local/greenplum-db/greenplum_path.sh"

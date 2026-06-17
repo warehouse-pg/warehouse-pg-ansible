@@ -1,0 +1,455 @@
+---
+
+- name: Stat coordinator postgresql.conf
+  ansible.builtin.stat:
+    path: "{{ _whpg_coordinator_postgresql_conf | trim }}"
+  register: _whpg_postgresql_conf_stat
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+
+- name: Initialize WarehouseDB cluster
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      gpinitsystem -c gpinitsystem_config_{{ cluster_name }} -a
+    chdir: "{{ _whpg_user_info.home }}"
+    executable: /bin/bash
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  when:
+    - not _whpg_postgresql_conf_stat.stat.exists
+
+- name: Verify database connectivity with SELECT version()
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -tAc 'SELECT version();'
+    chdir: "{{ _whpg_user_info.home }}"
+    executable: /bin/bash
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _whpg_psql_version
+  changed_when: false
+
+- name: Check for cluster-specific pg_hba template
+  ansible.builtin.stat:
+    path: "{{ role_path }}/templates/pg_hba_{{ cluster_name }}.conf"
+  delegate_to: localhost
+  become: false
+  register: _whpg_pg_hba_template_stat
+  changed_when: false
+
+- name: Apply cluster-specific pg_hba entries to coordinator pg_hba.conf
+  ansible.builtin.blockinfile:
+    path: "{{ _whpg_coordinator_pg_hba_conf | trim }}"
+    block: "{{ lookup('template', 'pg_hba_' ~ cluster_name ~ '.conf') }}"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK - pg_hba {{ cluster_name }}"
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _whpg_pg_hba_block
+  when:
+    - _whpg_pg_hba_template_stat.stat.exists
+
+- name: Validate additional_pg_hba_conf entries
+  ansible.builtin.assert:
+    that:
+      - item.conntype is defined
+      - item.conntype in ['local', 'host', 'hostssl', 'hostnossl', 'hostgssenc', 'hostnogssenc']
+      - item.database is defined
+      - item.database | string | length > 0
+      - item.user is defined
+      - item.user | string | length > 0
+      - item.method is defined
+      - item.method | string | length > 0
+      - (item.address is not defined)
+        or (item.address | string | length == 0)
+        or (item.address | string is match('^[0-9a-fA-F.:]+/[0-9.]+$'))
+    fail_msg: "Invalid additional_pg_hba_conf entry: {{ item }}"
+  loop: "{{ additional_pg_hba_conf }}"
+  when:
+    - additional_pg_hba_conf is defined
+    - additional_pg_hba_conf is iterable
+    - additional_pg_hba_conf is not string
+    - additional_pg_hba_conf is not mapping
+    - additional_pg_hba_conf | length > 0
+
+- name: Apply additional_pg_hba_conf entries to coordinator pg_hba.conf
+  ansible.builtin.blockinfile:
+    path: "{{ _whpg_coordinator_pg_hba_conf | trim }}"
+    block: |-
+      {% for e in additional_pg_hba_conf -%}
+      {{ e.conntype }}{{ '\t\t' }}{{ e.database }}{{ '\t\t' }}{{ e.user }}{% if e.address is defined and (e.address | string | length) > 0 %}{{ '\t\t' }}{{ e.address }}{% endif %}{{ '\t\t' }}{{ e.method }}{% if e.options is defined and (e.options | string | length) > 0 %}{{ '\t\t' }}{{ e.options }}{% endif %}
+
+      {% endfor %}
+    marker: "# {mark} ANSIBLE MANAGED BLOCK - additional_pg_hba_conf {{ cluster_name }}"
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _whpg_additional_pg_hba_block
+  when:
+    - additional_pg_hba_conf is defined
+    - additional_pg_hba_conf is iterable
+    - additional_pg_hba_conf is not string
+    - additional_pg_hba_conf is not mapping
+    - additional_pg_hba_conf | length > 0
+
+- name: Reload WarehouseDB to pick up pg_hba.conf changes
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      gpstop -a -u
+    chdir: "{{ _whpg_user_info.home }}"
+    executable: /bin/bash
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  when:
+    - (_whpg_pg_hba_block is changed)
+      or (_whpg_additional_pg_hba_block is defined and _whpg_additional_pg_hba_block is changed)
+
+- name: Stat cluster_hostfile_standby on coordinator
+  ansible.builtin.stat:
+    path: "{{ hostfile_standby }}"
+  register: _whpg_hostfile_standby_stat
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+
+- name: Read cluster_hostfile_standby on coordinator
+  ansible.builtin.slurp:
+    src: "{{ hostfile_standby }}"
+  register: _whpg_hostfile_standby_content
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  when: _whpg_hostfile_standby_stat.stat.exists
+
+- name: Determine standby host from hostfile
+  ansible.builtin.set_fact:
+    _whpg_standby_host: >-
+      {{ ((_whpg_hostfile_standby_content.content | b64decode).splitlines()
+          | map('trim') | reject('equalto', '') | list | first | default(''))
+         if (_whpg_hostfile_standby_stat.stat.exists
+             and (_whpg_hostfile_standby_content.content | default('') | length) > 0)
+         else '' }}
+
+- name: Query gpstate for standby configuration
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      export COORDINATOR_DATA_DIRECTORY={{ _whpg_coordinator_directory.stdout | trim }}/{{ _whpg_seg_prefix_value.stdout | trim }}-1
+      gpstate -f
+    chdir: "{{ _whpg_user_info.home }}"
+    executable: /bin/bash
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _whpg_gpstate_standby
+  changed_when: false
+  failed_when: false
+
+- name: Determine currently configured standby host from gpstate
+  ansible.builtin.set_fact:
+    _whpg_configured_standby_host: >-
+      {{ ((_whpg_gpstate_standby.stdout | default(''))
+          | regex_findall('Standby address\s*=\s*(\S+)')
+          | first | default('')) | trim }}
+
+- name: Fail if existing standby hostname differs from hostfile
+  ansible.builtin.fail:
+    msg: >-
+      Existing configured standby '{{ _whpg_configured_standby_host }}'
+      does not match expected standby '{{ _whpg_standby_host }}'
+      from {{ hostfile_standby }}. Changing the standby host is not allowed.
+  when:
+    - _whpg_standby_host | length > 0
+    - _whpg_configured_standby_host | length > 0
+    - _whpg_configured_standby_host != _whpg_standby_host
+
+- name: Initialize standby coordinator
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      export COORDINATOR_DATA_DIRECTORY={{ _whpg_coordinator_directory.stdout | trim }}/{{ _whpg_seg_prefix_value.stdout | trim }}-1
+      gpinitstandby -s {{ _whpg_standby_host }} -S {{ whpg_standby_data_directory }}/{{ _whpg_seg_prefix_value.stdout | trim }}-1 -a
+    chdir: "{{ _whpg_user_info.home }}"
+    executable: /bin/bash
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  when:
+    - _whpg_standby_host | length > 0
+    - _whpg_configured_standby_host | length == 0
+
+- name: Remove standby coordinator no longer in inventory
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      export COORDINATOR_DATA_DIRECTORY={{ _whpg_coordinator_directory.stdout | trim }}/{{ _whpg_seg_prefix_value.stdout | trim }}-1
+      gpinitstandby -r -a
+    chdir: "{{ _whpg_user_info.home }}"
+    executable: /bin/bash
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  when:
+    - _whpg_standby_host | length == 0
+    - _whpg_configured_standby_host | length > 0
+
+- name: Ensure COORDINATOR_DATA_DIRECTORY export is present in bash history
+  ansible.builtin.lineinfile:
+    path: "/home/{{ WHPG_UNIX_USER }}/.bash_history"
+    line: "export COORDINATOR_DATA_DIRECTORY={{ _whpg_coordinator_directory.stdout | trim }}/{{ _whpg_seg_prefix_value.stdout | trim }}-1"
+    state: present
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+
+- name: Stat shell init files for {{ WHPG_UNIX_USER }}
+  ansible.builtin.stat:
+    path: "/home/{{ WHPG_UNIX_USER }}/{{ item }}"
+  register: _whpg_shell_init_files
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  loop:
+    - .bashrc
+    - .zshrc
+
+- name: Persist COORDINATOR_DATA_DIRECTORY export in existing shell init files
+  ansible.builtin.lineinfile:
+    path: "{{ item.stat.path }}"
+    regexp: '^export COORDINATOR_DATA_DIRECTORY='
+    line: "export COORDINATOR_DATA_DIRECTORY={{ _whpg_coordinator_directory.stdout | trim }}/{{ _whpg_seg_prefix_value.stdout | trim }}-1"
+    state: present
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  loop: "{{ _whpg_shell_init_files.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.stat.exists
+
+- name: Query current gp_resource_manager from the database
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -tAc 'SHOW gp_resource_manager;'
+    chdir: "{{ _whpg_user_info.home }}"
+    executable: /bin/bash
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _whpg_gp_resource_manager
+  changed_when: false
+
+- name: Show current gp_resource_manager
+  ansible.builtin.debug:
+    msg: "Current gp_resource_manager: {{ _whpg_gp_resource_manager.stdout | trim }}"
+
+- name: Determine effective gp_resource_manager value
+  ansible.builtin.set_fact:
+    _whpg_effective_resource_manager: >-
+      {%- if whpg_resource_management == 'queue' -%}
+      queue
+      {%- elif whpg_resource_management == 'group-v2' -%}
+      group-v2
+      {%- elif (_whpg_cgroup_v2_unified.stat.exists | default(false))
+               and not (_whpg_cgroup_v1_cpu.stat.exists | default(false)) -%}
+      group-v2
+      {%- else -%}
+      group
+      {%- endif -%}
+
+- name: Show effective gp_resource_manager target
+  ansible.builtin.debug:
+    msg: >-
+      Effective gp_resource_manager target: {{ _whpg_effective_resource_manager }}
+      (inventory whpg_resource_management={{ whpg_resource_management }})
+
+- name: Switch gp_resource_manager to match whpg_resource_management
+  when:
+    - (_whpg_gp_resource_manager.stdout | trim) != _whpg_effective_resource_manager
+  block:
+    - name: Set gp_resource_manager via gpconfig
+      ansible.builtin.shell:
+        cmd: |
+          source {{ greenplum_path }}
+          export COORDINATOR_DATA_DIRECTORY={{ _whpg_coordinator_directory.stdout | trim }}/{{ _whpg_seg_prefix_value.stdout | trim }}-1
+          gpconfig -c gp_resource_manager -v {{ _whpg_effective_resource_manager }}
+        chdir: "{{ _whpg_user_info.home }}"
+        executable: /bin/bash
+      become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+      become_user: "{{ WHPG_UNIX_USER }}"
+
+    - name: Restart cluster to apply gp_resource_manager change
+      ansible.builtin.shell:
+        cmd: |
+          source {{ greenplum_path }}
+          export COORDINATOR_DATA_DIRECTORY={{ _whpg_coordinator_directory.stdout | trim }}/{{ _whpg_seg_prefix_value.stdout | trim }}-1
+          gpstop -r -a
+        chdir: "{{ _whpg_user_info.home }}"
+        executable: /bin/bash
+      become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+      become_user: "{{ WHPG_UNIX_USER }}"
+
+- name: Sync Resource Groups with database
+  when: whpg_resource_management == 'group'
+  block:
+    - name: Fetch existing resource groups with current settings
+      ansible.builtin.shell:
+        cmd: |
+          source {{ greenplum_path }}
+          psql -d postgres -tAc "SELECT row_to_json(t) FROM (SELECT groupname, concurrency, cpu_max_percent, cpu_weight, cpuset, memory_quota, min_cost, io_limit FROM gp_toolkit.gp_resgroup_config) t;"
+        chdir: "{{ _whpg_user_info.home }}"
+        executable: /bin/bash
+      become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+      become_user: "{{ WHPG_UNIX_USER }}"
+      register: _whpg_existing_rgroups_raw
+      changed_when: false
+
+    - name: Build resource group lookup data
+      ansible.builtin.set_fact:
+        _whpg_db_rgroups_list: >-
+          {{ _whpg_existing_rgroups_raw.stdout_lines | map('from_json') | list }}
+        _whpg_existing_rgroup_names: >-
+          {{ _whpg_existing_rgroups_raw.stdout_lines | map('from_json') | map(attribute='groupname') | list }}
+        _whpg_desired_rgroup_names: >-
+          {{ (whpg_resource_groups | default([])) | map(attribute='name') | list }}
+        _whpg_default_rgroups:
+          - default_group
+          - admin_group
+          - system_group
+
+    - name: Create resource groups missing from database
+      ansible.builtin.shell:
+        cmd: |
+          source {{ greenplum_path }}
+          psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE RESOURCE GROUP {{ item.name }} WITH (CONCURRENCY={{ item.CONCURRENCY }}, CPU_WEIGHT={{ item.CPU_WEIGHT }}, MEMORY_QUOTA={{ item.MEMORY_QUOTA }}, MIN_COST={{ item.MIN_COST }}, {% if item.IO_LIMIT == 'max' %}IO_LIMIT='max'{% else %}IO_LIMIT={{ item.IO_LIMIT }}{% endif %}, {% if (item.CPUSET | int) >= 0 %}CPUSET='{{ item.CPUSET }}'{% else %}CPU_MAX_PERCENT={{ item.CPU_MAX_PERCENT }}{% endif %});"
+        chdir: "{{ _whpg_user_info.home }}"
+        executable: /bin/bash
+      become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+      become_user: "{{ WHPG_UNIX_USER }}"
+      loop: "{{ whpg_resource_groups | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when:
+        - item.name not in _whpg_existing_rgroup_names
+
+    - name: Update existing resource groups when settings differ from inventory
+      ansible.builtin.shell:
+        cmd: |
+          source {{ greenplum_path }}
+          psql -d postgres -v ON_ERROR_STOP=1 <<'EOF'
+          ALTER RESOURCE GROUP {{ item.name }} SET CONCURRENCY {{ item.CONCURRENCY }};
+          ALTER RESOURCE GROUP {{ item.name }} SET CPU_WEIGHT {{ item.CPU_WEIGHT }};
+          ALTER RESOURCE GROUP {{ item.name }} SET MEMORY_QUOTA {{ item.MEMORY_QUOTA }};
+          ALTER RESOURCE GROUP {{ item.name }} SET MIN_COST {{ item.MIN_COST }};
+          {% if item.IO_LIMIT == 'max' %}ALTER RESOURCE GROUP {{ item.name }} SET IO_LIMIT 'max';{% else %}ALTER RESOURCE GROUP {{ item.name }} SET IO_LIMIT {{ item.IO_LIMIT }};{% endif %}
+          {% if (item.CPUSET | int) >= 0 %}ALTER RESOURCE GROUP {{ item.name }} SET CPUSET '{{ item.CPUSET }}';{% else %}ALTER RESOURCE GROUP {{ item.name }} SET CPU_MAX_PERCENT {{ item.CPU_MAX_PERCENT }};{% endif %}
+          EOF
+        chdir: "{{ _whpg_user_info.home }}"
+        executable: /bin/bash
+      become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+      become_user: "{{ WHPG_UNIX_USER }}"
+      vars:
+        _current: >-
+          {{ (_whpg_db_rgroups_list | selectattr('groupname', 'equalto', item.name) | list | first) | default({}) }}
+      loop: "{{ whpg_resource_groups | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when:
+        - item.name in _whpg_existing_rgroup_names
+        - ((_current.concurrency | default(-999) | int) != (item.CONCURRENCY | int))
+          or ((_current.cpu_weight | default(-999) | int) != (item.CPU_WEIGHT | int))
+          or ((_current.memory_quota | default(-999) | int) != (item.MEMORY_QUOTA | int))
+          or ((_current.min_cost | default(-999) | int) != (item.MIN_COST | int))
+          or ((_current.io_limit | default('') | string)
+              != ('max' if item.IO_LIMIT == 'max' else (item.IO_LIMIT | string)))
+          or (((item.CPUSET | int) >= 0)
+              and ((_current.cpuset | default('') | string) != (item.CPUSET | string)))
+          or (((item.CPUSET | int) < 0)
+              and ((_current.cpu_max_percent | default(-999) | int) != (item.CPU_MAX_PERCENT | int)))
+
+    - name: Drop resource groups no longer in inventory
+      ansible.builtin.shell:
+        cmd: |
+          source {{ greenplum_path }}
+          psql -d postgres -v ON_ERROR_STOP=1 -c "DROP RESOURCE GROUP {{ item }};"
+        chdir: "{{ _whpg_user_info.home }}"
+        executable: /bin/bash
+      become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+      become_user: "{{ WHPG_UNIX_USER }}"
+      loop: >-
+        {{ _whpg_existing_rgroup_names
+           | difference(_whpg_desired_rgroup_names)
+           | difference(_whpg_default_rgroups) }}
+
+- name: Sync Resource Queues with database
+  when: whpg_resource_management == 'queue'
+  block:
+    - name: Fetch existing resource queues with current settings
+      ansible.builtin.shell:
+        cmd: |
+          source {{ greenplum_path }}
+          psql -d postgres -tAc "SELECT row_to_json(t) FROM (SELECT q.rsqname AS rsqname, q.rsqcountlimit::text AS active_statements, q.rsqcostlimit::text AS max_cost, (SELECT c.ressetting FROM pg_resqueuecapability c WHERE c.resqueueid = q.oid AND c.restypid = 5) AS memory_limit, (SELECT c.ressetting FROM pg_resqueuecapability c WHERE c.resqueueid = q.oid AND c.restypid = 6) AS priority FROM pg_resqueue q) t;"
+        chdir: "{{ _whpg_user_info.home }}"
+        executable: /bin/bash
+      become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+      become_user: "{{ WHPG_UNIX_USER }}"
+      register: _whpg_existing_rqueues_raw
+      changed_when: false
+
+    - name: Build resource queue lookup data
+      ansible.builtin.set_fact:
+        _whpg_db_rqueues_list: >-
+          {{ _whpg_existing_rqueues_raw.stdout_lines | map('from_json') | list }}
+        _whpg_existing_rqueue_names: >-
+          {{ _whpg_existing_rqueues_raw.stdout_lines | map('from_json') | map(attribute='rsqname') | list }}
+        _whpg_desired_rqueue_names: >-
+          {{ (whpg_resource_queues | default([])) | map(attribute='name') | list }}
+        _whpg_default_rqueues:
+          - pg_default
+          - default_group
+          - admin_group
+          - system_group
+
+    - name: Create resource queues missing from database
+      ansible.builtin.shell:
+        cmd: |
+          source {{ greenplum_path }}
+          psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE RESOURCE QUEUE {{ item.name }} WITH (ACTIVE_STATEMENTS={{ item.ACTIVE_STATEMENTS }}, MEMORY_LIMIT='{{ item.MEMORY_LIMIT }}', PRIORITY={{ item.PRIORITY }}, MAX_COST={{ item.MAX_COST }});"
+        chdir: "{{ _whpg_user_info.home }}"
+        executable: /bin/bash
+      become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+      become_user: "{{ WHPG_UNIX_USER }}"
+      loop: "{{ whpg_resource_queues | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when:
+        - item.name not in _whpg_existing_rqueue_names
+
+    - name: Update existing resource queues when settings differ from inventory
+      ansible.builtin.shell:
+        cmd: |
+          source {{ greenplum_path }}
+          psql -d postgres -v ON_ERROR_STOP=1 -c "ALTER RESOURCE QUEUE {{ item.name }} WITH (ACTIVE_STATEMENTS={{ item.ACTIVE_STATEMENTS }}, MEMORY_LIMIT='{{ item.MEMORY_LIMIT }}', PRIORITY={{ item.PRIORITY }}, MAX_COST={{ item.MAX_COST }});"
+        chdir: "{{ _whpg_user_info.home }}"
+        executable: /bin/bash
+      become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+      become_user: "{{ WHPG_UNIX_USER }}"
+      vars:
+        _current: >-
+          {{ (_whpg_db_rqueues_list | selectattr('rsqname', 'equalto', item.name) | list | first) | default({}) }}
+      loop: "{{ whpg_resource_queues | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when:
+        - item.name in _whpg_existing_rqueue_names
+        - ((_current.active_statements | default(-999) | int) != (item.ACTIVE_STATEMENTS | int))
+          or ((_current.max_cost | default(-999) | float) != (item.MAX_COST | float))
+          or ((_current.memory_limit | default('') | string) != (item.MEMORY_LIMIT | string))
+          or ((_current.priority | default('') | string) != (item.PRIORITY | string))
+
+    - name: Drop resource queues no longer in inventory
+      ansible.builtin.shell:
+        cmd: |
+          source {{ greenplum_path }}
+          psql -d postgres -v ON_ERROR_STOP=1 -c "DROP RESOURCE QUEUE {{ item }};"
+        chdir: "{{ _whpg_user_info.home }}"
+        executable: /bin/bash
+      become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+      become_user: "{{ WHPG_UNIX_USER }}"
+      loop: >-
+        {{ _whpg_existing_rqueue_names
+           | difference(_whpg_desired_rqueue_names)
+           | difference(_whpg_default_rqueues) }}

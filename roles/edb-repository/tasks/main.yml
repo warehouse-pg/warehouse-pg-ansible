@@ -1,0 +1,16 @@
+---
+- name: Check for Red Hat based OS
+  ansible.builtin.assert:
+    that:
+      - ansible_facts["os_family"] == "RedHat"
+    fail_msg: "This role only supports Red Hat based operating systems."
+
+- name: Assert edb_token is defined and not empty
+  ansible.builtin.assert:
+    that:
+      - edb_token is defined
+      - edb_token | length > 0
+    fail_msg: "edb_token must be defined and not empty."
+
+- name: Install EDB repository
+  ansible.builtin.import_tasks: repository.yml

@@ -1,0 +1,683 @@
+---
+
+# Each whpg_extension_<name> variable accepts three kinds of values:
+#   true   -> install the extension package matching the configured major
+#             version (state honours whpg_upgrade)
+#   false  -> uninstall the extension package
+#   string -> install the exact RPM identified by the string (NVR, NEVRA,
+#             package file path, or any spec dnf accepts). The string is
+#             passed verbatim to dnf with state=present so the requested
+#             version is installed, upgraded, or downgraded as needed.
+
+- name: Gather installed package facts
+  ansible.builtin.package_facts:
+    manager: auto
+  become: true
+  become_user: root
+
+
+- name: Install and purge warehouse-pg extension packages
+  when: whpg_install_packages | bool
+  block:
+
+    ######################################################################
+    # Extension: diskquota
+    # Variable name: whpg_extension_diskquota
+
+    - name: Install diskquota extension
+      ansible.builtin.dnf:
+        name: >-
+          {{ whpg_extension_diskquota if whpg_extension_diskquota is string
+             else 'edb-whpg' ~ whpg_major_version ~ '-diskquota' }}
+        state: "{{ 'present' if whpg_extension_diskquota is string else _whpg_dnf_state }}"
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_diskquota is string
+          or (whpg_extension_diskquota is boolean and whpg_extension_diskquota)
+        - whpg_major_version | int in [6, 7]
+        - whpg_extension_diskquota is string
+          or ("edb-whpg" ~ whpg_major_version ~ "-diskquota") not in ansible_facts.packages
+          or whpg_upgrade == "always-upgrade-to-latest-minor"
+
+    - name: Purge diskquota extension
+      ansible.builtin.dnf:
+        name: "edb-whpg{{ whpg_major_version }}-diskquota"
+        state: absent
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_diskquota is boolean
+        - not whpg_extension_diskquota
+        - whpg_major_version | int in [6, 7]
+        - ("edb-whpg" ~ whpg_major_version ~ "-diskquota") in ansible_facts.packages
+
+
+    ######################################################################
+    # Extension: fts-enhanced
+    # Variable name: whpg_extension_fts_enhanced
+
+    - name: Install fts-enhanced extension
+      ansible.builtin.dnf:
+        name: >-
+          {{ whpg_extension_fts_enhanced if whpg_extension_fts_enhanced is string
+             else 'edb-whpg7-fts-enhanced' }}
+        state: "{{ 'present' if whpg_extension_fts_enhanced is string else _whpg_dnf_state }}"
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_fts_enhanced is string
+          or (whpg_extension_fts_enhanced is boolean and whpg_extension_fts_enhanced)
+        - whpg_major_version | int == 7
+        - whpg_extension_fts_enhanced is string
+          or 'edb-whpg7-fts-enhanced' not in ansible_facts.packages
+          or whpg_upgrade == 'always-upgrade-to-latest-minor'
+
+    - name: Purge fts-enhanced extension
+      ansible.builtin.dnf:
+        name: "edb-whpg7-fts-enhanced"
+        state: absent
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_fts_enhanced is boolean
+        - not whpg_extension_fts_enhanced
+        - whpg_major_version | int == 7
+        - "'edb-whpg7-fts-enhanced' in ansible_facts.packages"
+
+
+    ######################################################################
+    # Extension: hll
+    # Variable name: whpg_extension_hll
+
+    - name: Install hll extension
+      ansible.builtin.dnf:
+        name: >-
+          {{ whpg_extension_hll if whpg_extension_hll is string
+             else 'edb-whpg7-hll' }}
+        state: "{{ 'present' if whpg_extension_hll is string else _whpg_dnf_state }}"
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_hll is string
+          or (whpg_extension_hll is boolean and whpg_extension_hll)
+        - whpg_major_version | int == 7
+        - whpg_extension_hll is string
+          or 'edb-whpg7-hll' not in ansible_facts.packages
+          or whpg_upgrade == 'always-upgrade-to-latest-minor'
+
+    - name: Purge hll extension
+      ansible.builtin.dnf:
+        name: "edb-whpg7-hll"
+        state: absent
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_hll is boolean
+        - not whpg_extension_hll
+        - whpg_major_version | int == 7
+        - "'edb-whpg7-hll' in ansible_facts.packages"
+
+
+    ######################################################################
+    # Extension: madlib
+    # Variable name: whpg_extension_madlib
+
+    - name: Install madlib extension
+      ansible.builtin.dnf:
+        name: >-
+          {{ whpg_extension_madlib if whpg_extension_madlib is string
+             else 'edb-whpg' ~ whpg_major_version ~ '-madlib' }}
+        state: "{{ 'present' if whpg_extension_madlib is string else _whpg_dnf_state }}"
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_madlib is string
+          or (whpg_extension_madlib is boolean and whpg_extension_madlib)
+        - whpg_major_version | int in [6, 7]
+        - whpg_extension_madlib is string
+          or ("edb-whpg" ~ whpg_major_version ~ "-madlib") not in ansible_facts.packages
+          or whpg_upgrade == "always-upgrade-to-latest-minor"
+
+    - name: Purge madlib extension
+      ansible.builtin.dnf:
+        name: "edb-whpg{{ whpg_major_version }}-madlib"
+        state: absent
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_madlib is boolean
+        - not whpg_extension_madlib
+        - whpg_major_version | int in [6, 7]
+        - ("edb-whpg" ~ whpg_major_version ~ "-madlib") in ansible_facts.packages
+
+
+    ######################################################################
+    # Extension: madlib1
+    # Variable name: whpg_extension_madlib1
+
+    - name: Install madlib1 extension
+      ansible.builtin.dnf:
+        name: >-
+          {{ whpg_extension_madlib1 if whpg_extension_madlib1 is string
+             else 'edb-whpg6-madlib1' }}
+        state: "{{ 'present' if whpg_extension_madlib1 is string else _whpg_dnf_state }}"
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_madlib1 is string
+          or (whpg_extension_madlib1 is boolean and whpg_extension_madlib1)
+        - whpg_major_version | int == 6
+        - whpg_extension_madlib1 is string
+          or 'edb-whpg6-madlib1' not in ansible_facts.packages
+          or whpg_upgrade == 'always-upgrade-to-latest-minor'
+
+    - name: Purge madlib1 extension
+      ansible.builtin.dnf:
+        name: "edb-whpg6-madlib1"
+        state: absent
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_madlib1 is boolean
+        - not whpg_extension_madlib1
+        - whpg_major_version | int == 6
+        - "'edb-whpg6-madlib1' in ansible_facts.packages"
+
+
+    ######################################################################
+    # Extension: pgfs
+    # Variable name: whpg_extension_pgfs
+
+    - name: Install pgfs extension
+      ansible.builtin.dnf:
+        name: >-
+          {{ whpg_extension_pgfs if whpg_extension_pgfs is string
+             else 'edb-whpg7-pgfs' }}
+        state: "{{ 'present' if whpg_extension_pgfs is string else _whpg_dnf_state }}"
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_pgfs is string
+          or (whpg_extension_pgfs is boolean and whpg_extension_pgfs)
+        - whpg_major_version | int == 7
+        - whpg_extension_pgfs is string
+          or 'edb-whpg7-pgfs' not in ansible_facts.packages
+          or whpg_upgrade == 'always-upgrade-to-latest-minor'
+
+    - name: Purge pgfs extension
+      ansible.builtin.dnf:
+        name: "edb-whpg7-pgfs"
+        state: absent
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_pgfs is boolean
+        - not whpg_extension_pgfs
+        - whpg_major_version | int == 7
+        - "'edb-whpg7-pgfs' in ansible_facts.packages"
+
+
+    ######################################################################
+    # Extension: pgvector
+    # Variable name: whpg_extension_pgvector
+
+    - name: Install pgvector extension
+      ansible.builtin.dnf:
+        name: >-
+          {{ whpg_extension_pgvector if whpg_extension_pgvector is string
+             else 'edb-whpg7-pgvector' }}
+        state: "{{ 'present' if whpg_extension_pgvector is string else _whpg_dnf_state }}"
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_pgvector is string
+          or (whpg_extension_pgvector is boolean and whpg_extension_pgvector)
+        - whpg_major_version | int == 7
+        - whpg_extension_pgvector is string
+          or 'edb-whpg7-pgvector' not in ansible_facts.packages
+          or whpg_upgrade == 'always-upgrade-to-latest-minor'
+
+    - name: Purge pgvector extension
+      ansible.builtin.dnf:
+        name: "edb-whpg7-pgvector"
+        state: absent
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_pgvector is boolean
+        - not whpg_extension_pgvector
+        - whpg_major_version | int == 7
+        - "'edb-whpg7-pgvector' in ansible_facts.packages"
+
+
+    ######################################################################
+    # Extension: plr
+    # Variable name: whpg_extension_plr
+
+    - name: Install plr extension
+      ansible.builtin.dnf:
+        name: >-
+          {{ whpg_extension_plr if whpg_extension_plr is string
+             else 'edb-whpg7-plr' }}
+        state: "{{ 'present' if whpg_extension_plr is string else _whpg_dnf_state }}"
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_plr is string
+          or (whpg_extension_plr is boolean and whpg_extension_plr)
+        - whpg_major_version | int == 7
+        - whpg_extension_plr is string
+          or 'edb-whpg7-plr' not in ansible_facts.packages
+          or whpg_upgrade == 'always-upgrade-to-latest-minor'
+
+    - name: Purge plr extension
+      ansible.builtin.dnf:
+        name: "edb-whpg7-plr"
+        state: absent
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_plr is boolean
+        - not whpg_extension_plr
+        - whpg_major_version | int == 7
+        - "'edb-whpg7-plr' in ansible_facts.packages"
+
+
+    ######################################################################
+    # Extension: postgis
+    # Variable name: whpg_extension_postgis
+
+    - name: Install postgis extension
+      ansible.builtin.dnf:
+        name: >-
+          {{ whpg_extension_postgis if whpg_extension_postgis is string
+             else 'edb-whpg6-postgis' }}
+        state: "{{ 'present' if whpg_extension_postgis is string else _whpg_dnf_state }}"
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_postgis is string
+          or (whpg_extension_postgis is boolean and whpg_extension_postgis)
+        - whpg_major_version | int == 6
+        - whpg_extension_postgis is string
+          or 'edb-whpg6-postgis' not in ansible_facts.packages
+          or whpg_upgrade == 'always-upgrade-to-latest-minor'
+
+    - name: Purge postgis extension
+      ansible.builtin.dnf:
+        name: "edb-whpg6-postgis"
+        state: absent
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_postgis is boolean
+        - not whpg_extension_postgis
+        - whpg_major_version | int == 6
+        - "'edb-whpg6-postgis' in ansible_facts.packages"
+
+
+    ######################################################################
+    # Extension: pxf
+    # Variable name: whpg_extension_pxf
+
+    - name: Install pxf extension
+      ansible.builtin.dnf:
+        name: >-
+          {{ whpg_extension_pxf if whpg_extension_pxf is string
+             else 'edb-whpg' ~ whpg_major_version ~ '-pxf' }}
+        state: "{{ 'present' if whpg_extension_pxf is string else _whpg_dnf_state }}"
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_pxf is string
+          or (whpg_extension_pxf is boolean and whpg_extension_pxf)
+        - whpg_major_version | int in [6, 7]
+        - whpg_extension_pxf is string
+          or ("edb-whpg" ~ whpg_major_version ~ "-pxf") not in ansible_facts.packages
+          or whpg_upgrade == "always-upgrade-to-latest-minor"
+
+    - name: Purge pxf extension
+      ansible.builtin.dnf:
+        name: "edb-whpg{{ whpg_major_version }}-pxf"
+        state: absent
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_pxf is boolean
+        - not whpg_extension_pxf
+        - whpg_major_version | int in [6, 7]
+        - ("edb-whpg" ~ whpg_major_version ~ "-pxf") in ansible_facts.packages
+
+
+    ######################################################################
+    # Extension: q3c
+    # Variable name: whpg_extension_q3c
+
+    - name: Install q3c extension
+      ansible.builtin.dnf:
+        name: >-
+          {{ whpg_extension_q3c if whpg_extension_q3c is string
+             else 'edb-whpg7-q3c' }}
+        state: "{{ 'present' if whpg_extension_q3c is string else _whpg_dnf_state }}"
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_q3c is string
+          or (whpg_extension_q3c is boolean and whpg_extension_q3c)
+        - whpg_major_version | int == 7
+        - whpg_extension_q3c is string
+          or 'edb-whpg7-q3c' not in ansible_facts.packages
+          or whpg_upgrade == 'always-upgrade-to-latest-minor'
+
+    - name: Purge q3c extension
+      ansible.builtin.dnf:
+        name: "edb-whpg7-q3c"
+        state: absent
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_q3c is boolean
+        - not whpg_extension_q3c
+        - whpg_major_version | int == 7
+        - "'edb-whpg7-q3c' in ansible_facts.packages"
+
+
+    ######################################################################
+    # Extension: user_profile
+    # Variable name: whpg_extension_user_profile
+
+    - name: Install user_profile extension
+      ansible.builtin.dnf:
+        name: >-
+          {{ whpg_extension_user_profile if whpg_extension_user_profile is string
+             else 'edb-whpg' ~ whpg_major_version ~ '-user_profile' }}
+        state: "{{ 'present' if whpg_extension_user_profile is string else _whpg_dnf_state }}"
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_user_profile is string
+          or (whpg_extension_user_profile is boolean and whpg_extension_user_profile)
+        - whpg_major_version | int in [6, 7]
+        - whpg_extension_user_profile is string
+          or ("edb-whpg" ~ whpg_major_version ~ "-user_profile") not in ansible_facts.packages
+          or whpg_upgrade == "always-upgrade-to-latest-minor"
+
+    - name: Purge user_profile extension
+      ansible.builtin.dnf:
+        name: "edb-whpg{{ whpg_major_version }}-user_profile"
+        state: absent
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_user_profile is boolean
+        - not whpg_extension_user_profile
+        - whpg_major_version | int in [6, 7]
+        - ("edb-whpg" ~ whpg_major_version ~ "-user_profile") in ansible_facts.packages
+
+
+    ######################################################################
+    # Extension: vectorchord
+    # Variable name: whpg_extension_vectorchord
+
+    - name: Install vectorchord extension
+      ansible.builtin.dnf:
+        name: >-
+          {{ whpg_extension_vectorchord if whpg_extension_vectorchord is string
+             else 'edb-whpg7-vectorchord' }}
+        state: "{{ 'present' if whpg_extension_vectorchord is string else _whpg_dnf_state }}"
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_vectorchord is string
+          or (whpg_extension_vectorchord is boolean and whpg_extension_vectorchord)
+        - whpg_major_version | int == 7
+        - whpg_extension_vectorchord is string
+          or 'edb-whpg7-vectorchord' not in ansible_facts.packages
+          or whpg_upgrade == 'always-upgrade-to-latest-minor'
+
+    - name: Purge vectorchord extension
+      ansible.builtin.dnf:
+        name: "edb-whpg7-vectorchord"
+        state: absent
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_vectorchord is boolean
+        - not whpg_extension_vectorchord
+        - whpg_major_version | int == 7
+        - "'edb-whpg7-vectorchord' in ansible_facts.packages"
+
+
+    ######################################################################
+    # Extension: whpg_fdw
+    # Variable name: whpg_extension_whpg_fdw
+
+    - name: Install whpg_fdw extension
+      ansible.builtin.dnf:
+        name: >-
+          {{ whpg_extension_whpg_fdw if whpg_extension_whpg_fdw is string
+             else 'edb-whpg' ~ whpg_major_version ~ '-whpg_fdw' }}
+        state: "{{ 'present' if whpg_extension_whpg_fdw is string else _whpg_dnf_state }}"
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_whpg_fdw is string
+          or (whpg_extension_whpg_fdw is boolean and whpg_extension_whpg_fdw)
+        - whpg_major_version | int in [6, 7]
+        - whpg_extension_whpg_fdw is string
+          or ("edb-whpg" ~ whpg_major_version ~ "-whpg_fdw") not in ansible_facts.packages
+          or whpg_upgrade == "always-upgrade-to-latest-minor"
+
+    - name: Purge whpg_fdw extension
+      ansible.builtin.dnf:
+        name: "edb-whpg{{ whpg_major_version }}-whpg_fdw"
+        state: absent
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_extension_whpg_fdw is boolean
+        - not whpg_extension_whpg_fdw
+        - whpg_major_version | int in [6, 7]
+        - ("edb-whpg" ~ whpg_major_version ~ "-whpg_fdw") in ansible_facts.packages
+
+
+- name: Verify required warehouse-pg extension packages are installed
+  when: not (whpg_install_packages | bool)
+  block:
+
+    - name: Fail if diskquota extension is not installed
+      ansible.builtin.fail:
+        msg: >-
+          Extension package 'edb-whpg{{ whpg_major_version }}-diskquota' is not
+          installed and whpg_install_packages is false. Install the package
+          manually, or set whpg_install_packages to true.
+      when:
+        - whpg_extension_diskquota is string
+          or (whpg_extension_diskquota is boolean and whpg_extension_diskquota)
+        - whpg_major_version | int in [6, 7]
+        - ("edb-whpg" ~ whpg_major_version ~ "-diskquota") not in ansible_facts.packages
+
+    - name: Fail if fts-enhanced extension is not installed
+      ansible.builtin.fail:
+        msg: >-
+          Extension package 'edb-whpg7-fts-enhanced' is not installed and
+          whpg_install_packages is false. Install the package manually, or set
+          whpg_install_packages to true.
+      when:
+        - whpg_extension_fts_enhanced is string
+          or (whpg_extension_fts_enhanced is boolean and whpg_extension_fts_enhanced)
+        - whpg_major_version | int == 7
+        - "'edb-whpg7-fts-enhanced' not in ansible_facts.packages"
+
+    - name: Fail if hll extension is not installed
+      ansible.builtin.fail:
+        msg: >-
+          Extension package 'edb-whpg7-hll' is not installed and
+          whpg_install_packages is false. Install the package manually, or set
+          whpg_install_packages to true.
+      when:
+        - whpg_extension_hll is string
+          or (whpg_extension_hll is boolean and whpg_extension_hll)
+        - whpg_major_version | int == 7
+        - "'edb-whpg7-hll' not in ansible_facts.packages"
+
+    - name: Fail if madlib extension is not installed
+      ansible.builtin.fail:
+        msg: >-
+          Extension package 'edb-whpg{{ whpg_major_version }}-madlib' is not
+          installed and whpg_install_packages is false. Install the package
+          manually, or set whpg_install_packages to true.
+      when:
+        - whpg_extension_madlib is string
+          or (whpg_extension_madlib is boolean and whpg_extension_madlib)
+        - whpg_major_version | int in [6, 7]
+        - ("edb-whpg" ~ whpg_major_version ~ "-madlib") not in ansible_facts.packages
+
+    - name: Fail if madlib1 extension is not installed
+      ansible.builtin.fail:
+        msg: >-
+          Extension package 'edb-whpg6-madlib1' is not installed and
+          whpg_install_packages is false. Install the package manually, or set
+          whpg_install_packages to true.
+      when:
+        - whpg_extension_madlib1 is string
+          or (whpg_extension_madlib1 is boolean and whpg_extension_madlib1)
+        - whpg_major_version | int == 6
+        - "'edb-whpg6-madlib1' not in ansible_facts.packages"
+
+    - name: Fail if pgfs extension is not installed
+      ansible.builtin.fail:
+        msg: >-
+          Extension package 'edb-whpg7-pgfs' is not installed and
+          whpg_install_packages is false. Install the package manually, or set
+          whpg_install_packages to true.
+      when:
+        - whpg_extension_pgfs is string
+          or (whpg_extension_pgfs is boolean and whpg_extension_pgfs)
+        - whpg_major_version | int == 7
+        - "'edb-whpg7-pgfs' not in ansible_facts.packages"
+
+    - name: Fail if pgvector extension is not installed
+      ansible.builtin.fail:
+        msg: >-
+          Extension package 'edb-whpg7-pgvector' is not installed and
+          whpg_install_packages is false. Install the package manually, or set
+          whpg_install_packages to true.
+      when:
+        - whpg_extension_pgvector is string
+          or (whpg_extension_pgvector is boolean and whpg_extension_pgvector)
+        - whpg_major_version | int == 7
+        - "'edb-whpg7-pgvector' not in ansible_facts.packages"
+
+    - name: Fail if plr extension is not installed
+      ansible.builtin.fail:
+        msg: >-
+          Extension package 'edb-whpg7-plr' is not installed and
+          whpg_install_packages is false. Install the package manually, or set
+          whpg_install_packages to true.
+      when:
+        - whpg_extension_plr is string
+          or (whpg_extension_plr is boolean and whpg_extension_plr)
+        - whpg_major_version | int == 7
+        - "'edb-whpg7-plr' not in ansible_facts.packages"
+
+    - name: Fail if postgis extension is not installed
+      ansible.builtin.fail:
+        msg: >-
+          Extension package 'edb-whpg6-postgis' is not installed and
+          whpg_install_packages is false. Install the package manually, or set
+          whpg_install_packages to true.
+      when:
+        - whpg_extension_postgis is string
+          or (whpg_extension_postgis is boolean and whpg_extension_postgis)
+        - whpg_major_version | int == 6
+        - "'edb-whpg6-postgis' not in ansible_facts.packages"
+
+    - name: Fail if pxf extension is not installed
+      ansible.builtin.fail:
+        msg: >-
+          Extension package 'edb-whpg{{ whpg_major_version }}-pxf' is not
+          installed and whpg_install_packages is false. Install the package
+          manually, or set whpg_install_packages to true.
+      when:
+        - whpg_extension_pxf is string
+          or (whpg_extension_pxf is boolean and whpg_extension_pxf)
+        - whpg_major_version | int in [6, 7]
+        - ("edb-whpg" ~ whpg_major_version ~ "-pxf") not in ansible_facts.packages
+
+    - name: Fail if q3c extension is not installed
+      ansible.builtin.fail:
+        msg: >-
+          Extension package 'edb-whpg7-q3c' is not installed and
+          whpg_install_packages is false. Install the package manually, or set
+          whpg_install_packages to true.
+      when:
+        - whpg_extension_q3c is string
+          or (whpg_extension_q3c is boolean and whpg_extension_q3c)
+        - whpg_major_version | int == 7
+        - "'edb-whpg7-q3c' not in ansible_facts.packages"
+
+    - name: Fail if user_profile extension is not installed
+      ansible.builtin.fail:
+        msg: >-
+          Extension package 'edb-whpg{{ whpg_major_version }}-user_profile' is
+          not installed and whpg_install_packages is false. Install the package
+          manually, or set whpg_install_packages to true.
+      when:
+        - whpg_extension_user_profile is string
+          or (whpg_extension_user_profile is boolean and whpg_extension_user_profile)
+        - whpg_major_version | int in [6, 7]
+        - ("edb-whpg" ~ whpg_major_version ~ "-user_profile") not in ansible_facts.packages
+
+    - name: Fail if vectorchord extension is not installed
+      ansible.builtin.fail:
+        msg: >-
+          Extension package 'edb-whpg7-vectorchord' is not installed and
+          whpg_install_packages is false. Install the package manually, or set
+          whpg_install_packages to true.
+      when:
+        - whpg_extension_vectorchord is string
+          or (whpg_extension_vectorchord is boolean and whpg_extension_vectorchord)
+        - whpg_major_version | int == 7
+        - "'edb-whpg7-vectorchord' not in ansible_facts.packages"
+
+    - name: Fail if whpg_fdw extension is not installed
+      ansible.builtin.fail:
+        msg: >-
+          Extension package 'edb-whpg{{ whpg_major_version }}-whpg_fdw' is not
+          installed and whpg_install_packages is false. Install the package
+          manually, or set whpg_install_packages to true.
+      when:
+        - whpg_extension_whpg_fdw is string
+          or (whpg_extension_whpg_fdw is boolean and whpg_extension_whpg_fdw)
+        - whpg_major_version | int in [6, 7]
+        - ("edb-whpg" ~ whpg_major_version ~ "-whpg_fdw") not in ansible_facts.packages

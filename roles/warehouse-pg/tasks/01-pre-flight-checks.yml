@@ -1,0 +1,276 @@
+---
+
+# Check required variables
+
+- name: Assert whpg_major_version is a valid integer (6 or 7)
+  ansible.builtin.assert:
+    that:
+      - whpg_major_version is defined
+      - whpg_major_version | int | string == whpg_major_version | string
+      - whpg_major_version | int in [6, 7]
+    fail_msg: "whpg_major_version must be an integer set to 6 or 7 (got '{{ whpg_major_version | default('undefined') }}')."
+
+- name: Assert whpg_seg_prefix is a non-empty string
+  ansible.builtin.assert:
+    that:
+      - whpg_seg_prefix is defined
+      - whpg_seg_prefix is string
+      - whpg_seg_prefix | length > 0
+    fail_msg: "whpg_seg_prefix must be a non-empty string."
+
+- name: Assert whpg_seg_num is an integer between 1 and 64
+  ansible.builtin.assert:
+    that:
+      - whpg_seg_num is defined
+      - whpg_seg_num | int | string == whpg_seg_num | string
+      - whpg_seg_num | int >= 1
+      - whpg_seg_num | int <= 64
+    fail_msg: "whpg_seg_num must be an integer between 1 and 64 (got '{{ whpg_seg_num | default('undefined') }}')."
+
+- name: Assert whpg_port is an integer between 1024 and 65535
+  ansible.builtin.assert:
+    that:
+      - whpg_port is defined
+      - whpg_port | int | string == whpg_port | string
+      - whpg_port | int >= 1024
+      - whpg_port | int <= 65535
+    fail_msg: "whpg_port must be an integer between 1024 and 65535 (got '{{ whpg_port | default('undefined') }}')."
+
+- name: Assert whpg_data_directory is a non-empty string
+  ansible.builtin.assert:
+    that:
+      - whpg_data_directory is defined
+      - whpg_data_directory is string
+      - whpg_data_directory | length > 0
+    fail_msg: "whpg_data_directory must be defined and non-empty."
+
+- name: Assert whpg_data_directory exists on this host
+  ansible.builtin.stat:
+    path: "{{ whpg_data_directory }}"
+  register: _whpg_data_dir_stat
+
+- name: Fail if whpg_data_directory does not exist
+  ansible.builtin.assert:
+    that:
+      - _whpg_data_dir_stat.stat.exists
+      - _whpg_data_dir_stat.stat.isdir
+    fail_msg: "whpg_data_directory '{{ whpg_data_directory }}' does not exist or is not a directory on {{ inventory_hostname }}."
+
+- name: Assert whpg_cluster_name is a non-empty string
+  ansible.builtin.assert:
+    that:
+      - whpg_cluster_name is defined
+      - whpg_cluster_name is string
+      - whpg_cluster_name | length > 0
+    fail_msg: "whpg_cluster_name must be defined and non-empty."
+
+- name: Assert whpg_upgrade is either 'install-but-no-automatic-upgrades' or 'always-upgrade-to-latest-minor'
+  ansible.builtin.assert:
+    that:
+      - whpg_upgrade is defined
+      - whpg_upgrade is string
+      - whpg_upgrade in ['install-but-no-automatic-upgrades', 'always-upgrade-to-latest-minor']
+    fail_msg: >-
+      whpg_upgrade must be 'install-but-no-automatic-upgrades' or
+      'always-upgrade-to-latest-minor' (got '{{ whpg_upgrade | default('undefined') }}').
+
+- name: Map whpg_upgrade to the dnf module's state value
+  ansible.builtin.set_fact:
+    _whpg_dnf_state: "{{ 'latest' if whpg_upgrade == 'always-upgrade-to-latest-minor' else 'present' }}"
+
+- name: Assert whpg_use_versioned_directories is a boolean
+  ansible.builtin.assert:
+    that:
+      - whpg_use_versioned_directories is defined
+      - whpg_use_versioned_directories | type_debug in ['bool', 'AnsibleUnsafeText', 'str']
+      - whpg_use_versioned_directories | bool | string in ['True', 'False']
+    fail_msg: "whpg_use_versioned_directories must be a boolean."
+
+# Check optional variables (validated only when defined and non-empty)
+
+- name: Assert whpg_seg_base_port is a valid port when set
+  ansible.builtin.assert:
+    that:
+      - whpg_seg_base_port | int | string == whpg_seg_base_port | string
+      - whpg_seg_base_port | int >= 1024
+      - whpg_seg_base_port | int <= 65535
+    fail_msg: "whpg_seg_base_port must be an integer between 1024 and 65535 (got '{{ whpg_seg_base_port }}')."
+  when:
+    - whpg_seg_base_port is defined
+    - whpg_seg_base_port | string | length > 0
+
+- name: Assert whpg_default_database is a valid PostgreSQL database name when set
+  ansible.builtin.assert:
+    that:
+      - whpg_default_database is string
+      - whpg_default_database | length > 0
+      - whpg_default_database | length <= 63
+      - whpg_default_database is regex('^[a-zA-Z_][a-zA-Z0-9_]*$')
+    fail_msg: >-
+      whpg_default_database must be a valid PostgreSQL identifier
+      (1-63 chars, starts with letter or underscore, alphanumeric and underscores only).
+      Got '{{ whpg_default_database }}'.
+  when:
+    - whpg_default_database is defined
+    - whpg_default_database | string | length > 0
+
+- name: Assert whpg_install_backup is a boolean when set
+  ansible.builtin.assert:
+    that:
+      - whpg_install_backup | type_debug in ['bool', 'AnsibleUnsafeText', 'str']
+      - whpg_install_backup | bool | string in ['True', 'False']
+    fail_msg: "whpg_install_backup must be a boolean."
+  when:
+    - whpg_install_backup is defined
+    - whpg_install_backup | string | length > 0
+
+- name: Assert whpg_resource_management is 'queue', 'group', or 'group-v2'
+  ansible.builtin.assert:
+    that:
+      - whpg_resource_management is defined
+      - whpg_resource_management is string
+      - whpg_resource_management in ['queue', 'group', 'group-v2']
+    fail_msg: >-
+      whpg_resource_management must be 'queue', 'group', or 'group-v2'
+      (got '{{ whpg_resource_management | default('undefined') }}').
+
+- name: Check for cgroup v2 unified hierarchy (required for 'group-v2')
+  ansible.builtin.stat:
+    path: /sys/fs/cgroup/cgroup.controllers
+  register: _whpg_preflight_cgroup_v2
+  when: whpg_resource_management == 'group-v2'
+
+- name: Assert cgroup v2 is available when whpg_resource_management is 'group-v2'
+  ansible.builtin.assert:
+    that:
+      - _whpg_preflight_cgroup_v2.stat.exists | default(false)
+    fail_msg: >-
+      whpg_resource_management is 'group-v2', but /sys/fs/cgroup/cgroup.controllers
+      does not exist on {{ inventory_hostname }} — this host is not running with
+      a cgroup v2 unified hierarchy. Use 'group' to auto-detect, or configure the
+      kernel for cgroup v2 (RHEL 9+ default) and re-run.
+  when: whpg_resource_management == 'group-v2'
+
+- name: Assert whpg_resource_groups is a list when set
+  ansible.builtin.assert:
+    that:
+      - whpg_resource_groups is iterable
+      - whpg_resource_groups is not string
+      - whpg_resource_groups is not mapping
+    fail_msg: "whpg_resource_groups must be a list."
+  when:
+    - whpg_resource_management == 'group'
+    - whpg_resource_groups is defined
+    - whpg_resource_groups | length > 0
+
+- name: Assert each whpg_resource_groups entry is a valid hash
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.name is defined
+      - item.name is string
+      - item.name | length > 0
+      - item.CONCURRENCY is defined
+      - item.CONCURRENCY | int | string == item.CONCURRENCY | string
+      - item.CONCURRENCY | int >= 0
+      - item.CONCURRENCY | int <= 1000
+      - item.CPU_MAX_PERCENT is defined
+      - item.CPU_MAX_PERCENT | int | string == item.CPU_MAX_PERCENT | string
+      - item.CPU_MAX_PERCENT | int >= -1
+      - item.CPU_MAX_PERCENT | int <= 100
+      - item.CPU_WEIGHT is defined
+      - item.CPU_WEIGHT | int | string == item.CPU_WEIGHT | string
+      - item.CPU_WEIGHT | int >= 1
+      - item.CPU_WEIGHT | int <= 500
+      - item.CPUSET is defined
+      - item.CPUSET | int | string == item.CPUSET | string
+      - item.CPUSET | int >= -1
+      - item.CPUSET | int <= 256
+      - item.IO_LIMIT is defined
+      - (item.IO_LIMIT is string and item.IO_LIMIT == 'max')
+        or (item.IO_LIMIT | int == -1)
+        or (item.IO_LIMIT | int >= 2 and item.IO_LIMIT | int <= 4294967295)
+      - item.MEMORY_QUOTA is defined
+      - item.MEMORY_QUOTA | int | string == item.MEMORY_QUOTA | string
+      - item.MEMORY_QUOTA | int >= -1
+      - item.MIN_COST is defined
+      - item.MIN_COST | int | string == item.MIN_COST | string
+      - item.MIN_COST | int >= 0
+    fail_msg: "Invalid whpg_resource_groups entry: {{ item }}"
+  loop: "{{ whpg_resource_groups }}"
+  when:
+    - whpg_resource_management == 'group'
+    - whpg_resource_groups is defined
+    - whpg_resource_groups | length > 0
+
+- name: Assert whpg_resource_queues is a list when set
+  ansible.builtin.assert:
+    that:
+      - whpg_resource_queues is iterable
+      - whpg_resource_queues is not string
+      - whpg_resource_queues is not mapping
+    fail_msg: "whpg_resource_queues must be a list."
+  when:
+    - whpg_resource_management == 'queue'
+    - whpg_resource_queues is defined
+    - whpg_resource_queues | length > 0
+
+- name: Assert each whpg_resource_queues entry is a valid hash
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.name is defined
+      - item.name is string
+      - item.name | length > 0
+      - item.MEMORY_LIMIT is defined
+      - item.MEMORY_LIMIT is string
+      - item.MEMORY_LIMIT | length > 0
+      - item.ACTIVE_STATEMENTS is defined
+      - item.ACTIVE_STATEMENTS | int | string == item.ACTIVE_STATEMENTS | string
+      - item.ACTIVE_STATEMENTS | int > 0
+      - item.PRIORITY is defined
+      - item.PRIORITY is string
+      - item.PRIORITY in ['LOW', 'MEDIUM', 'HIGH', 'MAX']
+      - item.MAX_COST is defined
+      - item.MAX_COST | float >= 0
+    fail_msg: "Invalid whpg_resource_queues entry: {{ item }}"
+  loop: "{{ whpg_resource_queues }}"
+  when:
+    - whpg_resource_management == 'queue'
+    - whpg_resource_queues is defined
+    - whpg_resource_queues | length > 0
+
+- name: Fail if whpg_seg_enable_mirrors is true but no segment hosts are defined
+  ansible.builtin.fail:
+    msg: >-
+      whpg_seg_enable_mirrors is true but no hosts with whpg_role='segment'
+      are defined in group 'cluster_{{ cluster_name }}'. Mirrors require
+      at least one segment host.
+  when:
+    - whpg_seg_enable_mirrors | bool
+    - (groups['cluster_' ~ cluster_name] | default([])
+        | map('extract', hostvars)
+        | selectattr('whpg_role', 'defined')
+        | selectattr('whpg_role', 'equalto', 'segment')
+        | list | length) == 0
+
+# Check privilege escalation
+
+- name: Test that privilege escalation (become) works
+  ansible.builtin.command: id -u
+  become: true
+  changed_when: false
+  register: _whpg_become_check
+  failed_when: false
+
+- name: Fail if privilege escalation (become) does not work
+  ansible.builtin.fail:
+    msg: >-
+      Privilege escalation (become) failed on {{ inventory_hostname }}.
+      Configure passwordless sudo for the connecting user, or pass
+      --ask-become-pass (or set ansible_become_password) when running
+      the playbook.
+      Error: {{ _whpg_become_check.msg | default(_whpg_become_check.stderr | default('become failed')) }}
+  when:
+    - _whpg_become_check.rc is not defined or _whpg_become_check.rc != 0
+      or (_whpg_become_check.stdout | default('')) | trim != '0'

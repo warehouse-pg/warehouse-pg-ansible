@@ -1,0 +1,69 @@
+---
+
+- name: Create WHPG_UNIX_GROUP
+  ansible.builtin.group:
+    name: "{{ WHPG_UNIX_GROUP }}"
+    state: present
+  become: true
+  become_user: root
+
+- name: Create WHPG_UNIX_USER
+  ansible.builtin.user:
+    name: "{{ WHPG_UNIX_USER }}"
+    group: "{{ WHPG_UNIX_GROUP }}"
+    comment: "WarehousePG Database"
+    password: "!"
+    create_home: true
+    state: present
+  become: true
+  become_user: root
+
+- name: Create bash history file for WHPG_UNIX_USER
+  ansible.builtin.file:
+    path: "/home/{{ WHPG_UNIX_USER }}/.bash_history"
+    state: touch
+    owner: "{{ WHPG_UNIX_USER }}"
+    group: "{{ WHPG_UNIX_GROUP }}"
+    mode: "0600"
+    modification_time: preserve
+    access_time: preserve
+  become: true
+  become_user: root
+
+- name: Ensure bash history entries are present
+  ansible.builtin.lineinfile:
+    path: "/home/{{ WHPG_UNIX_USER }}/.bash_history"
+    line: "{{ item }}"
+    state: present
+  loop:
+    - "source /usr/local/greenplum-db/greenplum_path.sh"
+    - "psql postgres"
+    - "sudo /bin/bash --login"
+    - "gpstart -a"
+    - "gpstop -a -M fast"
+    - "gpstate -a"
+  become: true
+  become_user: root
+
+- name: Create psql history file for WHPG_UNIX_USER
+  ansible.builtin.file:
+    path: "/home/{{ WHPG_UNIX_USER }}/.psql_history"
+    state: touch
+    owner: "{{ WHPG_UNIX_USER }}"
+    group: "{{ WHPG_UNIX_GROUP }}"
+    mode: "0600"
+    modification_time: preserve
+    access_time: preserve
+  become: true
+  become_user: root
+
+- name: Ensure psql history entries are present
+  ansible.builtin.lineinfile:
+    path: "/home/{{ WHPG_UNIX_USER }}/.psql_history"
+    line: "{{ item }}"
+    state: present
+  loop:
+    - "SELECT version();"
+    - "SELECT * from gp_segment_configuration;"
+  become: true
+  become_user: root

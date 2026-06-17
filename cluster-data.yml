@@ -1,0 +1,37 @@
+---
+
+# Snapshot the state of every WarehousePG cluster declared as a child of
+# whpg_clusters. The warehouse-pg-cluster-data role short-circuits every
+# host that is not the cluster's coordinator and writes two files into
+# the WHPG_UNIX_USER home directory on each coordinator:
+#
+#   - cluster_state_<cluster name>.txt   (human-readable)
+#   - cluster_state_<cluster name>.json  (machine-readable)
+#
+#
+# Variables consumed by this Playbook:
+#
+# Defaults are defined in roles/warehouse-pg-cluster-data/defaults/main.yml.
+# The same variables also apply to playbook.yml; that file shows the
+# defaults as commented-out `vars:` blocks ready to be uncommented.
+#
+#   WHPG_UNIX_USER   Unix user that owns the WarehousePG installation;
+#                    the cluster_state_<cluster name>.{txt,json} files
+#                    are written into this user's home directory.
+#                    Default: "gpadmin"
+#   WHPG_UNIX_GROUP  Unix group that owns the cluster_state files.
+#                    Default: "gpadmin"
+#   greenplum_path   Path to greenplum_path.sh; sourced before running
+#                    psql/gpstate/etc.
+#                    Default: "/usr/local/greenplum-db/greenplum_path.sh"
+#
+# tl;dr: each role must have the same $WHPG_UNIX_USER, $WHPG_UNIX_GROUP
+#        and $greenplum_path setting
+
+
+- name: Collect WarehousePG cluster data
+  hosts: whpg_clusters
+  become: true
+  any_errors_fatal: false
+  roles:
+    - role: warehouse-pg-cluster-data

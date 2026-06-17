@@ -1,0 +1,50 @@
+{% set not_designated = [] %}
+{% for s in _cluster_state.all_segment_configuration %}
+{%   if s.role != s.preferred_role %}
+{%     set _ = not_designated.append(s) %}
+{%   endif %}
+{% endfor %}
+{{ {
+     'cluster_name': _cluster_state.cluster_name,
+     'scanned_at': _cluster_state.scanned_at,
+     'version': _cluster_state.version,
+     'localization': _cluster_state.localization,
+     'coordinator': _cluster_state.coordinator,
+     'standby': _cluster_state.standby,
+     'segments': {
+       'count': _cluster_state.segments.count | int,
+       'list': _cluster_state.segments.list,
+     },
+     'mirrors': {
+       'present': _cluster_state.mirrors.present,
+       'count': _cluster_state.mirrors.count | int,
+       'list': _cluster_state.mirrors.list,
+     },
+     'segments_not_in_designated_configuration': not_designated,
+     'all_segment_configuration': _cluster_state.all_segment_configuration,
+     'cluster_identity': _cluster_state.cluster_identity,
+     'gpinitsystem_config': _cluster_state.gpinitsystem_config,
+     'connections': _cluster_state.connections,
+     'fts': _cluster_state.fts,
+     'interconnect': _cluster_state.interconnect,
+     'network_tuning': _cluster_state.network_tuning,
+     'memory': _cluster_state.memory,
+     'orca': _cluster_state.orca,
+     'workfile': _cluster_state.workfile,
+     'autoanalyze': _cluster_state.autoanalyze,
+     'planner_misc': _cluster_state.planner_misc,
+     'gucs_consistency': _cluster_state.gucs_consistency,
+     'resource_management': _cluster_state.resource_management,
+     'gucs': _cluster_state.gucs,
+     'tablespaces': _cluster_state.tablespaces,
+     'databases': _cluster_state.databases,
+     'extensions': _cluster_state.extensions,
+     'pg_hba': _cluster_state.pg_hba,
+     'pg_ident': _cluster_state.pg_ident,
+     'pg_default_acl': _cluster_state.pg_default_acl,
+     'fdw': _cluster_state.fdw,
+     'per_host': _cluster_state.per_host,
+     'gp_disk_free': _cluster_state.gp_disk_free,
+     'replication': _cluster_state.replication,
+     'files': _cluster_state.files,
+   } | to_nice_json }}

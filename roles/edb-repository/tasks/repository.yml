@@ -1,0 +1,56 @@
+---
+
+- name: Check if the EnterpriseDB repo is already installed
+  ansible.builtin.stat:
+    path: "/etc/yum.repos.d/enterprisedb-{{ edb_repository }}.repo"
+  become: true
+  register: edb_repo_status
+
+- name: Install the repository if it does not exist
+  when: not edb_repo_status.stat.exists
+  block:
+
+    - name: Download EDB repository install script
+      ansible.builtin.uri:
+        url: "https://downloads.enterprisedb.com/basic/{{ edb_repository }}/setup.rpm.sh"
+        url_username: "token"
+        url_password: "{{ edb_token }}"
+        force_basic_auth: true
+        return_content: true
+        dest: /root/edb_setup.rpm.sh
+        mode: "0700"
+        timeout: 30
+      throttle: "{{ serial_operations }}"
+      register: _edb_download
+      until: _edb_download is succeeded
+      retries: 10
+      delay: 5
+
+    - name: Execute EDB repository install script
+      ansible.builtin.command: /root/edb_setup.rpm.sh
+      become: true
+      become_user: root
+      changed_when: true
+      throttle: "{{ serial_operations }}"
+      timeout: 30
+      register: _edb_execute
+      until: _edb_execute is succeeded
+      retries: 10
+      delay: 5
+
+    - name: Remove install script
+      ansible.builtin.file:
+        path: /root/edb_setup.rpm.sh
+        state: absent
+
+    - name: Refresh repository
+      ansible.builtin.command: yum makecache
+      become: true
+      become_user: root
+      changed_when: true
+      throttle: "{{ serial_operations }}"
+      timeout: 30
+      register: _edb_refresh
+      until: _edb_refresh is succeeded
+      retries: 10
+      delay: 5

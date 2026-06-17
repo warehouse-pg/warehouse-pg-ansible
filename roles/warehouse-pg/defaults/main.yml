@@ -1,0 +1,131 @@
+---
+
+WHPG_UNIX_USER: "gpadmin"
+WHPG_UNIX_GROUP: "gpadmin"
+
+# Path to the data directory on every cluster server
+# This setting can't be empty, and the directory must already exist
+whpg_data_directory: ""
+whpg_major_version: 7
+whpg_seg_prefix: "default"
+# the $whpg_seg_num variable is currently only evaluated at cluster creation time
+whpg_seg_num: 2
+whpg_port: 5432
+whpg_seg_base_port: 6000
+# $whpg_upgrade can be "install-but-no-automatic-upgrades" or
+# "always-upgrade-to-latest-minor", whereas the mapping is:
+# "install-but-no-automatic-upgrades" -> RPM "present"
+# "always-upgrade-to-latest-minor" -> RPM "latest"
+whpg_upgrade: "install-but-no-automatic-upgrades"
+whpg_use_versioned_directories: true
+
+whpg_seg_enable_mirrors: false
+whpg_seg_mirror_base_port: 7000
+
+whpg_default_database: ""
+# if $whpg_install_packages is set to false, no packages will be installes
+# instead the user is required to install the packages
+whpg_install_packages: true
+whpg_install_backup: true
+
+# Workload management: 'group' (Resource Groups, auto-detects cgroup v1/v2),
+# 'group-v2' (Resource Groups, force cgroup v2 — system must have cgroup v2
+# unified hierarchy mounted), or 'queue' (Resource Queues, legacy).
+# Maps to the gp_resource_manager GUC; 'group' is translated to 'group-v2' at
+# runtime when the OS only has cgroup v2.
+whpg_resource_management: "group-v2"
+
+# Resource Groups to create when whpg_resource_management == 'group'.
+# A list of hashes; each entry needs a 'name'.
+# Defaults / valid ranges (Greenplum 7):
+#   CONCURRENCY      default 20    (0-1000)
+#   CPU_MAX_PERCENT  default -1    (-1, or 1-100; mutually exclusive with CPUSET)
+#   CPU_WEIGHT       default 100   (1-500)
+#   CPUSET           default -1    (-1, or 0-256; mutually exclusive with CPU_MAX_PERCENT)
+#   IO_LIMIT         default -1    (-1, 2-4294967295, or "max")
+#   MEMORY_QUOTA     default -1    (-1, or 0..int_max in MB)
+#   MIN_COST         default 0     (>= 0)
+# Examples:
+#   whpg_resource_groups:
+#     - name: rgroup_etl              # balanced ETL workload
+#       CONCURRENCY: 20
+#       CPU_MAX_PERCENT: 20
+#       CPU_WEIGHT: 500
+#       CPUSET: -1
+#       IO_LIMIT: -1
+#       MEMORY_QUOTA: 250
+#       MIN_COST: 50
+#     - name: rgroup_reporting        # many concurrent, low-cost report queries
+#       CONCURRENCY: 50
+#       CPU_MAX_PERCENT: 30
+#       CPU_WEIGHT: 200
+#       CPUSET: -1
+#       IO_LIMIT: -1
+#       MEMORY_QUOTA: 100
+#       MIN_COST: 0
+#     - name: rgroup_admin            # dedicated CPU core for admin/maintenance
+#       CONCURRENCY: 5
+#       CPU_MAX_PERCENT: -1
+#       CPU_WEIGHT: 500
+#       CPUSET: 0
+#       IO_LIMIT: max
+#       MEMORY_QUOTA: 500
+#       MIN_COST: 100
+
+# Resource Queues to create when whpg_resource_management == 'queue'.
+# A list of hashes; each entry needs a 'name'.
+# Defaults / valid values (Greenplum 7):
+#   MEMORY_LIMIT       string ('2GB', or a bigint as string)
+#   ACTIVE_STATEMENTS  integer > 0   (pg_default default: 20)
+#   PRIORITY           LOW | MEDIUM | HIGH | MAX   (default MEDIUM)
+#   MAX_COST           number >= 0
+# Examples:
+#   whpg_resource_queues:
+#     - name: etl                     # heavy ETL: low concurrency, large memory
+#       MEMORY_LIMIT: '2GB'
+#       ACTIVE_STATEMENTS: 3
+#       PRIORITY: MEDIUM
+#       MAX_COST: 0
+#     - name: reporting               # many concurrent, prioritized reports
+#       MEMORY_LIMIT: '4GB'
+#       ACTIVE_STATEMENTS: 10
+#       PRIORITY: HIGH
+#       MAX_COST: 0
+whpg_resource_queues: []
+
+# wait no longer than this time in seconds for the RPM repository
+DNF_TIMEOUT: 120
+
+# add maintenance jobs for old gpAdminLogs logfiles (coordinator and standby)
+whpg_remove_old_gpAdminLogs: false
+# add maintenance job for old data directory logfiles
+whpg_remove_old_logs: false
+
+# define path for "greenplum_path.sh" file, for easier migration later on
+greenplum_path: "/usr/local/greenplum-db/greenplum_path.sh"
+
+# Extensions: set to true to install the corresponding extension package
+whpg_extension_diskquota: false
+whpg_extension_fts_enhanced: false
+whpg_extension_hll: false
+whpg_extension_madlib: false
+whpg_extension_madlib1: false
+whpg_extension_pgfs: false
+whpg_extension_pgvector: false
+whpg_extension_plr: false
+whpg_extension_postgis: false
+whpg_extension_pxf: false
+whpg_extension_q3c: false
+whpg_extension_user_profile: false
+whpg_extension_vectorchord: false
+whpg_extension_whpg_fdw: false
+
+# expand the database automatically
+# defaults to false, can take a long time
+whpg_expand_db: true
+# automatically redistribute the data (might take some time)
+whpg_expand_db_redistribute: true
+# automatically run ANALYZE after expansion (might take some time)
+whpg_expand_db_run_analyze: true
+# automatically cleanup after expansion (only do this if you are sure the expansion works)
+whpg_expand_cleanup_after_complete: true

@@ -1,0 +1,339 @@
+---
+
+# The gpexpand input file only contains new hosts
+# The existing hostfile is written with the new configuration already
+# Pull data from the database about existing configuration
+# Along the way verify that an expansion is required
+
+- name: Query existing segment hosts from gp_segment_configuration
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc \
+        "SELECT DISTINCT hostname FROM gp_segment_configuration WHERE content > -1;"
+    executable: /bin/bash
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _whpg_existing_segments_raw
+  changed_when: false
+
+- name: Build sorted list of existing segment hosts
+  ansible.builtin.set_fact:
+    _whpg_existing_segments_sorted: >-
+      {{ _whpg_existing_segments_raw.stdout_lines
+         | map('trim')
+         | reject('equalto', '')
+         | list
+         | sort }}
+
+- name: Build sorted list of inventory segment hosts
+  ansible.builtin.set_fact:
+    _whpg_inventory_segments_sorted: "{{ _cluster_hosts_segments | sort }}"
+
+- name: Fail if existing segment hosts are missing from new inventory
+  ansible.builtin.fail:
+    msg: >-
+      Segment hosts present in gp_segment_configuration are missing from
+      the new inventory:
+      {{ _whpg_existing_segments_sorted | difference(_whpg_inventory_segments_sorted) | join(', ') }}.
+  when:
+    - _whpg_existing_segments_sorted != _whpg_inventory_segments_sorted
+    - (_whpg_existing_segments_sorted | difference(_whpg_inventory_segments_sorted)) | length > 0
+
+- name: Check if gpexpand schema exists
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -d postgres -h localhost -tAc \
+        "SELECT 1 FROM pg_namespace WHERE nspname = 'gpexpand';"
+    executable: /bin/bash
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _whpg_gpexpand_schema_check
+  changed_when: false
+
+- name: Verify designated order before expanding cluster
+  when:
+    - (_whpg_inventory_segments_sorted | length > _whpg_existing_segments_sorted | length)
+      or ((_whpg_gpexpand_schema_check.stdout | trim) | length > 0)
+  block:
+
+    - name: Query segment hosts in designated order from gp_segment_configuration
+      ansible.builtin.shell:
+        cmd: |
+          source {{ greenplum_path }}
+          psql -d postgres -h localhost -tAc \
+            "SELECT hostname FROM gp_segment_configuration WHERE content > -1 AND role = 'p' ORDER BY content;"
+        executable: /bin/bash
+      become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+      become_user: "{{ WHPG_UNIX_USER }}"
+      register: _whpg_segments_ordered_raw
+      changed_when: false
+
+    - name: Build ordered unique segment host list from database
+      ansible.builtin.set_fact:
+        _whpg_segments_ordered: >-
+          {{ _whpg_segments_ordered_raw.stdout_lines
+             | map('trim')
+             | reject('equalto', '')
+             | unique
+             | list }}
+
+    - name: Abort if previously-existing segment hosts are not in their original order
+      ansible.builtin.fail:
+        msg: >-
+          Previously-existing segment hosts in gp_segment_configuration are no
+          longer in their original inventory order. Aborting expansion.
+          Database order (previous hosts only):
+          {{ _whpg_segments_ordered | select('in', _previous_segments) | list | join(', ') }}.
+          Inventory order (previous hosts only):
+          {{ _cluster_hosts_segments | select('in', _previous_segments) | list | join(', ') }}.
+      when:
+        - _previous_segments | length > 0
+        - (_whpg_segments_ordered | select('in', _previous_segments) | list)
+          != (_cluster_hosts_segments | select('in', _previous_segments) | list)
+
+    - debug: msg="Segment operation{{':'}} expand cluster"
+
+    - name: Compute new segment hosts for cluster expansion
+      ansible.builtin.set_fact:
+        _whpg_new_segments: "{{ _cluster_hosts_segments | reject('in', _whpg_existing_segments_sorted) | list }}"
+
+    - name: Generate expand input files for new segment hosts
+      when:
+        - _whpg_new_segments | length > 0
+      block:
+
+        - name: Write cluster_hostfile_expand
+          ansible.builtin.copy:
+            dest: "{{ _whpg_user_info.home }}/cluster_hostfile_expand_{{ cluster_name }}"
+            content: "{{ _whpg_new_segments | join('\n') }}\n"
+            owner: "{{ WHPG_UNIX_USER }}"
+            group: "{{ WHPG_UNIX_GROUP }}"
+            mode: "0644"
+
+        - name: Query current segment topology metadata for gpexpand input
+          ansible.builtin.shell:
+            cmd: |
+              source {{ greenplum_path }}
+              psql -d postgres -h localhost -tAF '|' -c "
+                SELECT
+                  COALESCE(max(dbid), 0),
+                  COALESCE(max(content) FILTER (WHERE content > -1), -1),
+                  COALESCE(count(*) FILTER (WHERE role = 'm' AND content > -1), 0)
+                FROM gp_segment_configuration;
+              "
+            executable: /bin/bash
+          become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+          become_user: "{{ WHPG_UNIX_USER }}"
+          register: _whpg_expand_meta_raw
+          changed_when: false
+
+        - name: Parse current segment topology metadata
+          ansible.builtin.set_fact:
+            _whpg_expand_max_dbid: "{{ (_whpg_expand_meta_raw.stdout | trim).split('|')[0] | int }}"
+            _whpg_expand_max_content: "{{ (_whpg_expand_meta_raw.stdout | trim).split('|')[1] | int }}"
+            _whpg_expand_has_mirrors: "{{ ((_whpg_expand_meta_raw.stdout | trim).split('|')[2] | int) > 0 }}"
+
+        - name: Fail if mirrors are enabled but only one new host is being added
+          ansible.builtin.fail:
+            msg: >-
+              Cluster has mirrors enabled, but only one new segment host
+              ({{ _whpg_new_segments | join(', ') }}) is being added.
+              Grouped mirroring requires at least two new hosts.
+          when:
+            - _whpg_expand_has_mirrors | bool
+            - _whpg_new_segments | length < 2
+
+        - name: Write gpexpand input file
+          ansible.builtin.template:
+            src: gpexpand_input.j2
+            dest: "{{ _whpg_user_info.home }}/cluster_expand_input_{{ cluster_name }}"
+            owner: "{{ WHPG_UNIX_USER }}"
+            group: "{{ WHPG_UNIX_GROUP }}"
+            mode: "0644"
+
+    # ----------------------------------------------------------------
+    # gpexpand state machine
+    # ----------------------------------------------------------------
+    # Step 1: input file (cluster_expand_input_<cluster>) -- done above
+    # Step 2: gpexpand -i           -> creates "gpexpand" schema
+    # Step 3: gpexpand              -> redistribution
+    #         markers: "EXPANSION STARTED" (in progress)
+    #                  "EXPANSION COMPLETE" (data redistributed)
+    # Cleanup: gpexpand -c          -> marker: "COMPLETED"
+
+    - name: Resolve coordinator data directory for gpexpand
+      ansible.builtin.set_fact:
+        _whpg_coordinator_data_dir: >-
+          {{ _whpg_coordinator_directory.stdout | trim }}/{{ _whpg_seg_prefix_value.stdout | trim }}-1
+
+    - name: Run gpexpand -i (Step 2 -- initialize)
+      ansible.builtin.shell:
+        cmd: |
+          source {{ greenplum_path }}
+          export COORDINATOR_DATA_DIRECTORY={{ _whpg_coordinator_data_dir | trim }}
+          gpexpand -i {{ _whpg_user_info.home }}/cluster_expand_input_{{ cluster_name }}
+        executable: /bin/bash
+      become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+      become_user: "{{ WHPG_UNIX_USER }}"
+      when: (_whpg_gpexpand_schema_check.stdout | trim) | length == 0
+
+    - name: Query gpexpand.status entries
+      ansible.builtin.shell:
+        cmd: |
+          source {{ greenplum_path }}
+          psql -d postgres -h localhost -tAc \
+            "SELECT status FROM gpexpand.status;"
+        executable: /bin/bash
+      become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+      become_user: "{{ WHPG_UNIX_USER }}"
+      register: _whpg_gpexpand_status_raw
+      changed_when: false
+      failed_when: false
+
+    - name: Compute gpexpand state flags
+      ansible.builtin.set_fact:
+        _whpg_gpexpand_started: >-
+          {{ 'EXPANSION STARTED' in
+             (_whpg_gpexpand_status_raw.stdout_lines | map('trim') | list) }}
+        _whpg_gpexpand_complete: >-
+          {{ 'EXPANSION COMPLETE' in
+             (_whpg_gpexpand_status_raw.stdout_lines | map('trim') | list) }}
+        _whpg_gpexpand_completed: >-
+          {{ 'COMPLETED' in
+             (_whpg_gpexpand_status_raw.stdout_lines | map('trim') | list) }}
+
+    - name: Halt -- gpexpand redistribution is still in progress
+      ansible.builtin.fail:
+        msg: >-
+          WARNING: A gpexpand redistribution is currently in progress
+          ("EXPANSION STARTED" exists, "EXPANSION COMPLETE" does not).
+          This typically happens when the expansion was started manually.
+          Wait for it to finish, then re-run the Playbook.
+      when:
+        - _whpg_gpexpand_started | bool
+        - not (_whpg_gpexpand_complete | bool)
+
+    - name: Notify that redistribution may take a long time
+      ansible.builtin.debug:
+        msg: >-
+          About to run 'gpexpand' (Step 3 -- redistribution).
+          This step may take a long time depending on data volume.
+      when:
+        - not (_whpg_gpexpand_complete | bool)
+        - whpg_expand_db_redistribute | default(false) | bool
+
+    - name: Run gpexpand (Step 3 -- redistribute data)
+      ansible.builtin.shell:
+        cmd: |
+          source {{ greenplum_path }}
+          export COORDINATOR_DATA_DIRECTORY={{ _whpg_coordinator_data_dir | trim }}
+          gpexpand
+        executable: /bin/bash
+      become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+      become_user: "{{ WHPG_UNIX_USER }}"
+      when:
+        - not (_whpg_gpexpand_complete | bool)
+        - whpg_expand_db_redistribute | default(false) | bool
+
+    - name: Remind user to run 'gpexpand' manually
+      ansible.builtin.debug:
+        msg: >-
+          gpexpand redistribution (Step 3) has not been run.
+          Run it manually as {{ WHPG_UNIX_USER }}:
+            source {{ greenplum_path }}
+            export COORDINATOR_DATA_DIRECTORY={{ _whpg_coordinator_data_dir | trim }}
+            gpexpand
+      when:
+        - not (_whpg_gpexpand_complete | bool)
+        - not (whpg_expand_db_redistribute | default(false) | bool)
+
+    - name: Re-query gpexpand.status entries after Step 3
+      ansible.builtin.shell:
+        cmd: |
+          source {{ greenplum_path }}
+          psql -d postgres -h localhost -tAc \
+            "SELECT status FROM gpexpand.status;"
+        executable: /bin/bash
+      become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+      become_user: "{{ WHPG_UNIX_USER }}"
+      register: _whpg_gpexpand_status_raw
+      changed_when: false
+      failed_when: false
+
+    - name: Recompute gpexpand state flags
+      ansible.builtin.set_fact:
+        _whpg_gpexpand_started: >-
+          {{ 'EXPANSION STARTED' in
+             (_whpg_gpexpand_status_raw.stdout_lines | map('trim') | list) }}
+        _whpg_gpexpand_complete: >-
+          {{ 'EXPANSION COMPLETE' in
+             (_whpg_gpexpand_status_raw.stdout_lines | map('trim') | list) }}
+        _whpg_gpexpand_completed: >-
+          {{ 'COMPLETED' in
+             (_whpg_gpexpand_status_raw.stdout_lines | map('trim') | list) }}
+
+    - name: Notify that ANALYZE will be run (not idempotent)
+      ansible.builtin.debug:
+        msg: >-
+          Running ANALYZE on all databases after expansion.
+          This step is not idempotent; re-runs will trigger another ANALYZE.
+      when:
+        - _whpg_gpexpand_complete | bool
+        - whpg_expand_db_run_analyze | default(false) | bool
+
+    - name: Run ANALYZE on all user databases
+      ansible.builtin.shell:
+        cmd: |
+          source {{ greenplum_path }}
+          export COORDINATOR_DATA_DIRECTORY={{ _whpg_coordinator_data_dir | trim }}
+          set -e
+          for db in $(psql -d postgres -h localhost -tAc \
+              "SELECT datname FROM pg_database
+                 WHERE datname NOT IN ('template0', 'template1')
+                   AND datallowconn;"); do
+            psql -d "$db" -h localhost -c "ANALYZE;"
+          done
+        executable: /bin/bash
+      become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+      become_user: "{{ WHPG_UNIX_USER }}"
+      when:
+        - _whpg_gpexpand_complete | bool
+        - whpg_expand_db_run_analyze | default(false) | bool
+
+    - name: Remind user to run ANALYZE manually
+      ansible.builtin.debug:
+        msg: >-
+          Expansion is complete but ANALYZE was not run automatically.
+          Run ANALYZE on every database to refresh planner statistics.
+      when:
+        - _whpg_gpexpand_complete | bool
+        - not (whpg_expand_db_run_analyze | default(false) | bool)
+
+    - name: Run gpexpand -c (cleanup)
+      ansible.builtin.shell:
+        cmd: |
+          source {{ greenplum_path }}
+          export COORDINATOR_DATA_DIRECTORY={{ _whpg_coordinator_data_dir | trim }}
+          echo n | gpexpand -c -s
+        executable: /bin/bash
+      become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+      become_user: "{{ WHPG_UNIX_USER }}"
+      when:
+        - _whpg_gpexpand_complete | bool
+        - not (_whpg_gpexpand_completed | bool)
+        - whpg_expand_cleanup_after_complete | default(false) | bool
+
+    - name: Remind user to run 'gpexpand -c' manually
+      ansible.builtin.debug:
+        msg: >-
+          Expansion is complete but cleanup was not run automatically.
+          Run cleanup as {{ WHPG_UNIX_USER }}:
+            source {{ greenplum_path }}
+            export COORDINATOR_DATA_DIRECTORY={{ _whpg_coordinator_data_dir | trim }}
+            gpexpand -c
+      when:
+        - _whpg_gpexpand_complete | bool
+        - not (_whpg_gpexpand_completed | bool)
+        - not (whpg_expand_cleanup_after_complete | default(false) | bool)

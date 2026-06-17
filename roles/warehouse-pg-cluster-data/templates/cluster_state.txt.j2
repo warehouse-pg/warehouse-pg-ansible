@@ -1,0 +1,423 @@
+WarehousePG cluster state: {{ _cluster_state.cluster_name }}
+Generated: {{ _cluster_state.scanned_at }}
+
+Cluster identity:
+  postmaster_start_time: {{ _cluster_state.cluster_identity.postmaster_start_time }}
+  system_identifier:     {{ _cluster_state.cluster_identity.system_identifier }}
+
+Version:
+  {{ _cluster_state.version }}
+
+Global cluster localization:
+  server_encoding:            {{ _cluster_state.localization.server_encoding }}
+  lc_collate:                 {{ _cluster_state.localization.lc_collate }}
+  lc_ctype:                   {{ _cluster_state.localization.lc_ctype }}
+  lc_messages:                {{ _cluster_state.localization.lc_messages }}
+  lc_monetary:                {{ _cluster_state.localization.lc_monetary }}
+  lc_numeric:                 {{ _cluster_state.localization.lc_numeric }}
+  lc_time:                    {{ _cluster_state.localization.lc_time }}
+  timezone:                   {{ _cluster_state.localization.timezone }}
+  datestyle:                  {{ _cluster_state.localization.datestyle }}
+  intervalstyle:              {{ _cluster_state.localization.intervalstyle }}
+  default_text_search_config: {{ _cluster_state.localization.default_text_search_config }}
+  server_version:             {{ _cluster_state.localization.server_version }}
+  server_version_num:         {{ _cluster_state.localization.server_version_num }}
+
+Cluster connection configuration:
+  max_connections:                {{ _cluster_state.connections.max_connections }}
+  superuser_reserved_connections: {{ _cluster_state.connections.superuser_reserved_connections }}
+  max_prepared_transactions:      {{ _cluster_state.connections.max_prepared_transactions }}
+  listen_addresses:               {{ _cluster_state.connections.listen_addresses }}
+  port:                           {{ _cluster_state.connections.port }}
+  unix_socket_directories:        {{ _cluster_state.connections.unix_socket_directories }}
+  ssl:                            {{ _cluster_state.connections.ssl }}
+  authentication_timeout:         {{ _cluster_state.connections.authentication_timeout }}
+
+Fault Tolerance Service (FTS):
+  gp_fts_probe_interval:                {{ _cluster_state.fts.gp_fts_probe_interval }}
+  gp_fts_probe_timeout:                 {{ _cluster_state.fts.gp_fts_probe_timeout }}
+  gp_fts_probe_retries:                 {{ _cluster_state.fts.gp_fts_probe_retries }}
+  gp_fts_replication_attempt_count:     {{ _cluster_state.fts.gp_fts_replication_attempt_count }}
+  gp_fts_mark_mirror_down_grace_period: {{ _cluster_state.fts.gp_fts_mark_mirror_down_grace_period }}
+  gp_segment_connect_timeout:           {{ _cluster_state.fts.gp_segment_connect_timeout }}
+
+Interconnect transport:
+  gp_interconnect_type:            {{ _cluster_state.interconnect.gp_interconnect_type }}
+  gp_interconnect_proxy_addresses: {{ _cluster_state.interconnect.gp_interconnect_proxy_addresses }}
+  gp_max_packet_size:              {{ _cluster_state.interconnect.gp_max_packet_size }}
+
+Network tuning buffers:
+  tcp_keepalives_idle:               {{ _cluster_state.network_tuning.tcp_keepalives_idle }}
+  tcp_keepalives_interval:           {{ _cluster_state.network_tuning.tcp_keepalives_interval }}
+  tcp_keepalives_count:              {{ _cluster_state.network_tuning.tcp_keepalives_count }}
+  gp_interconnect_queue_depth:       {{ _cluster_state.network_tuning.gp_interconnect_queue_depth }}
+  gp_interconnect_snd_queue_depth:   {{ _cluster_state.network_tuning.gp_interconnect_snd_queue_depth }}
+  gp_interconnect_transmit_timeout:  {{ _cluster_state.network_tuning.gp_interconnect_transmit_timeout }}
+  gp_interconnect_min_rto:           {{ _cluster_state.network_tuning.gp_interconnect_min_rto }}
+
+Memory management:
+  Database GUCs:
+    shared_buffers:                        {{ _cluster_state.memory.guc.shared_buffers }}
+    work_mem:                              {{ _cluster_state.memory.guc.work_mem }}
+    maintenance_work_mem:                  {{ _cluster_state.memory.guc.maintenance_work_mem }}
+    gp_vmem_protect_limit:                 {{ _cluster_state.memory.guc.gp_vmem_protect_limit }}
+    gp_vmem_protect_segworker_cache_limit: {{ _cluster_state.memory.guc.gp_vmem_protect_segworker_cache_limit }}
+    runaway_detector_activation_percent:   {{ _cluster_state.memory.guc.runaway_detector_activation_percent }}
+    statement_mem:                         {{ _cluster_state.memory.guc.statement_mem }}
+    max_statement_mem:                     {{ _cluster_state.memory.guc.max_statement_mem }}
+  OS kernel (coordinator host /proc/sys/vm):
+    overcommit_memory: {{ _cluster_state.memory.os.overcommit_memory }}
+    overcommit_ratio:  {{ _cluster_state.memory.os.overcommit_ratio }}
+    overcommit_kbytes: {{ _cluster_state.memory.os.overcommit_kbytes }}
+    swappiness:        {{ _cluster_state.memory.os.swappiness }}
+
+ORCA / planner GUCs:
+  optimizer:                                            {{ _cluster_state.orca.optimizer }}
+  optimizer_enable_associativity:                       {{ _cluster_state.orca.optimizer_enable_associativity }}
+  optimizer_join_arity_for_associativity_commutativity: {{ _cluster_state.orca.optimizer_join_arity_for_associativity_commutativity }}
+  gp_enable_global_deadlock_detector:                   {{ _cluster_state.planner_misc.gp_enable_global_deadlock_detector }}
+  effective_cache_size:                                 {{ _cluster_state.planner_misc.effective_cache_size }}
+  gp_segments_for_planner:                              {{ _cluster_state.planner_misc.gp_segments_for_planner }}
+  default_statistics_target:                            {{ _cluster_state.planner_misc.default_statistics_target }}
+
+Workfile / spill GUCs:
+  gp_workfile_compression:           {{ _cluster_state.workfile.gp_workfile_compression }}
+  gp_workfile_limit_per_query:       {{ _cluster_state.workfile.gp_workfile_limit_per_query }}
+  gp_workfile_limit_per_segment:     {{ _cluster_state.workfile.gp_workfile_limit_per_segment }}
+  gp_workfile_limit_files_per_query: {{ _cluster_state.workfile.gp_workfile_limit_files_per_query }}
+
+Auto-analyze GUCs:
+  gp_autostats_mode:                {{ _cluster_state.autoanalyze.gp_autostats_mode }}
+  gp_autostats_on_change_threshold: {{ _cluster_state.autoanalyze.gp_autostats_on_change_threshold }}
+  gp_autostats_allow_nonowner:      {{ _cluster_state.autoanalyze.gp_autostats_allow_nonowner }}
+
+GUC consistency across coordinator and segments (gpconfig -s):
+  name                            consistent  coordinator                       segment
+  ------------------------------  ----------  --------------------------------  --------------------------------
+{% for g in _cluster_state.gucs_consistency %}
+  {{ '%-30s' | format(g.name) }}  {{ '%-10s' | format(g.consistent) }}  {{ '%-32s' | format(g.coordinator_value) }}  {{ g.segment_value }}
+{% endfor %}
+
+Coordinator:
+  hostname: {{ _cluster_state.coordinator.hostname }}
+  port:     {{ _cluster_state.coordinator.port }}
+  datadir:  {{ _cluster_state.coordinator.datadir }}
+
+Standby:
+{% if _cluster_state.standby.present %}
+  hostname: {{ _cluster_state.standby.hostname }}
+  port:     {{ _cluster_state.standby.port }}
+  datadir:  {{ _cluster_state.standby.datadir }}
+{% else %}
+  (none)
+{% endif %}
+
+Primary segments ({{ _cluster_state.segments.count }}):
+{% if _cluster_state.segments.count | int > 0 %}
+  dbid  content  port   hostname                         datadir
+  ----  -------  -----  -------------------------------  ----------------------------------------
+{% for s in _cluster_state.segments.list %}
+  {{ '%-4s' | format(s.dbid) }}  {{ '%-7s' | format(s.content) }}  {{ '%-5s' | format(s.port) }}  {{ '%-31s' | format(s.hostname) }}  {{ s.datadir }}
+{% endfor %}
+{% else %}
+  (none)
+{% endif %}
+
+Mirror segments ({{ _cluster_state.mirrors.count }}):
+{% if _cluster_state.mirrors.count | int > 0 %}
+  dbid  content  port   hostname                         datadir
+  ----  -------  -----  -------------------------------  ----------------------------------------
+{% for s in _cluster_state.mirrors.list %}
+  {{ '%-4s' | format(s.dbid) }}  {{ '%-7s' | format(s.content) }}  {{ '%-5s' | format(s.port) }}  {{ '%-31s' | format(s.hostname) }}  {{ s.datadir }}
+{% endfor %}
+{% else %}
+  (none -- mirrors are not configured)
+{% endif %}
+
+Segments not in designated configuration:
+{% set not_designated = [] %}
+{% for s in _cluster_state.all_segment_configuration %}
+{%   if s.role != s.preferred_role %}
+{%     set _ = not_designated.append(s) %}
+{%   endif %}
+{% endfor %}
+{% if not_designated | length > 0 %}
+  dbid  content  role  preferred_role  mode  status  hostname
+  ----  -------  ----  --------------  ----  ------  --------
+{% for s in not_designated %}
+  {{ '%-4s' | format(s.dbid) }}  {{ '%-7s' | format(s.content) }}  {{ '%-4s' | format(s.role) }}  {{ '%-14s' | format(s.preferred_role) }}  {{ '%-4s' | format(s.mode) }}  {{ '%-6s' | format(s.status) }}  {{ s.hostname }}
+{% endfor %}
+{% else %}
+  (all segments are in their designated role)
+{% endif %}
+
+Per-host filesystems (data directories under whpg_data_directory):
+{% for h in _cluster_state.per_host.filesystems %}
+  {{ h.hostname }} ({{ h.whpg_role }}, data root: {{ h.whpg_data_directory }}):
+{% if h.data_directory_mounts | length > 0 %}
+{% for d in h.data_directory_mounts %}
+    - {{ d.path }}
+        mount:   {{ d.mount }} ({{ d.device }}, {{ d.fstype }})
+        options: {{ d.options }}
+        size:    used {{ ((d.size_used_bytes | int) / 1073741824) | round(2) }} GiB / total {{ ((d.size_total_bytes | int) / 1073741824) | round(2) }} GiB ({{ d.size_used_percent }}% used), avail {{ ((d.size_available_bytes | int) / 1073741824) | round(2) }} GiB
+{% endfor %}
+{% else %}
+    (no segment data directories found under {{ h.whpg_data_directory }})
+{% endif %}
+{% endfor %}
+
+gp_toolkit.gp_disk_free (free space per segment, from the cluster's view):
+{% if _cluster_state.gp_disk_free | length > 0 %}
+  segment  hostname                         device                          free (GiB)
+  -------  -------------------------------  ------------------------------  ----------
+{% for d in _cluster_state.gp_disk_free %}
+  {{ '%-7s' | format(d.dfsegment) }}  {{ '%-31s' | format(d.dfhostname) }}  {{ '%-30s' | format(d.dfdevice) }}  {{ ((d.dfspace | int) / 1048576) | round(2) }}
+{% endfor %}
+{% else %}
+  (no rows -- gp_toolkit may be unavailable)
+{% endif %}
+
+Per-host sysctls:
+{% for h in (_cluster_state.per_host.sysctls.keys() | sort) %}
+  {{ h }}:
+{% for k in (_cluster_state.per_host.sysctls[h].keys() | sort) %}
+    {{ '%-36s' | format(k) }} {{ _cluster_state.per_host.sysctls[h][k] if _cluster_state.per_host.sysctls[h][k] is not none else '(unavailable)' }}
+{% endfor %}
+{% endfor %}
+
+Per-host time synchronization:
+{% for h in _cluster_state.per_host.time_sync %}
+  {{ h.hostname }}: synchronized={{ h.synchronized }}{% if h.chronyc_rc | int == 0 %} (chronyc){% elif h.timedatectl_rc | int == 0 %} (timedatectl){% else %} (no NTP tool available){% endif %}
+
+{% endfor %}
+
+Replication (gp_stat_replication, mirrors + standby):
+{% if _cluster_state.replication.gp_stat_replication | length > 0 %}
+  seg  pid     application       state      sync_state    sent_lsn        replay_lsn      replay_lag
+  ---  ------  ----------------  ---------  ------------  --------------  --------------  ----------
+{% for r in _cluster_state.replication.gp_stat_replication %}
+  {{ '%-3s' | format(r.gp_segment_id) }}  {{ '%-6s' | format(r.pid) }}  {{ '%-16s' | format(r.application_name) }}  {{ '%-9s' | format(r.state) }}  {{ '%-12s' | format(r.sync_state) }}  {{ '%-14s' | format(r.sent_lsn) }}  {{ '%-14s' | format(r.replay_lsn) }}  {{ r.replay_lag }}
+{% endfor %}
+{% else %}
+  (no rows -- no active replication targets)
+{% endif %}
+
+pg_replication_slots (coordinator):
+{% if _cluster_state.replication.pg_replication_slots | length > 0 %}
+  slot_name             type        database              active  restart_lsn      confirmed_flush_lsn
+  --------------------  ----------  --------------------  ------  ---------------  -------------------
+{% for s in _cluster_state.replication.pg_replication_slots %}
+  {{ '%-20s' | format(s.slot_name) }}  {{ '%-10s' | format(s.slot_type) }}  {{ '%-20s' | format(s.database if s.database else '-') }}  {{ '%-6s' | format(s.active) }}  {{ '%-15s' | format(s.restart_lsn) }}  {{ s.confirmed_flush_lsn }}
+{% endfor %}
+{% else %}
+  (none)
+{% endif %}
+
+gpstate -e (Greenplum FTS report; truncated):
+{% if (_cluster_state.replication.gpstate_e | length) > 0 %}
+{{ _cluster_state.replication.gpstate_e | indent(2, true) }}
+{% else %}
+  (no output captured)
+{% endif %}
+
+Resource management:
+  manager: {{ _cluster_state.resource_management.manager }}
+{% if _cluster_state.resource_management.manager in ['group', 'group-v2'] %}
+  resource groups ({{ _cluster_state.resource_management.groups | length }}):
+{% if _cluster_state.resource_management.groups | length > 0 %}
+{% for g in _cluster_state.resource_management.groups %}
+    - {{ g.groupname }}
+        concurrency:     {{ g.concurrency }}
+        cpu_max_percent: {{ g.cpu_max_percent }}
+        cpu_weight:      {{ g.cpu_weight }}
+        cpuset:          {{ g.cpuset }}
+        memory_quota:    {{ g.memory_quota }}
+        min_cost:        {{ g.min_cost }}
+        io_limit:        {{ g.io_limit }}
+{% endfor %}
+{% else %}
+    (none)
+{% endif %}
+{% elif _cluster_state.resource_management.manager == 'queue' %}
+  resource queues ({{ _cluster_state.resource_management.queues | length }}):
+{% if _cluster_state.resource_management.queues | length > 0 %}
+{% for q in _cluster_state.resource_management.queues %}
+    - {{ q.rsqname }}
+        active_statements: {{ q.active_statements }}
+        memory_limit:      {{ q.memory_limit }}
+        priority:          {{ q.priority }}
+        max_cost:          {{ q.max_cost }}
+{% endfor %}
+{% else %}
+    (none)
+{% endif %}
+{% endif %}
+{% if _cluster_state.resource_management.manager in ['group', 'group-v2'] and (_cluster_state.resource_management.groups_status | length) > 0 %}
+  resource group runtime status (gp_toolkit.gp_resgroup_status):
+{% for s in _cluster_state.resource_management.groups_status %}
+    - {{ s }}
+{% endfor %}
+{% elif _cluster_state.resource_management.manager == 'queue' and (_cluster_state.resource_management.queues_status | length) > 0 %}
+  resource queue runtime status (gp_toolkit.gp_resqueue_status):
+{% for s in _cluster_state.resource_management.queues_status %}
+    - {{ s }}
+{% endfor %}
+{% endif %}
+
+Non-default GUCs ({{ _cluster_state.gucs.non_default_count }}):
+{% if _cluster_state.gucs.non_default_count | int > 0 %}
+{% for g in _cluster_state.gucs.non_default %}
+  - {{ g.name }}
+      setting:  {{ g.setting }}{% if g.unit %} ({{ g.unit }}){% endif %}
+      default:  {{ g.boot_val }}
+      source:   {{ g.source }}{% if g.sourcefile %} ({{ g.sourcefile }}:{{ g.sourceline }}){% endif %}
+
+{% endfor %}
+{% else %}
+  (all GUCs are at their compiled-in defaults)
+{% endif %}
+
+Tablespaces ({{ _cluster_state.tablespaces.count }}):
+{% if _cluster_state.tablespaces.count | int > 0 %}
+{% for t in _cluster_state.tablespaces.list %}
+  - {{ t.spcname }} (oid {{ t.oid }})
+      owner:                {{ t.owner }}
+      coordinator location: {{ t.coordinator_location if t.coordinator_location else '(in coordinator data directory)' }}
+      options:              {{ t.spcoptions if t.spcoptions else '(none)' }}
+      acl:                  {{ t.acl if t.acl else '(default)' }}
+      segment locations:
+{% if t.segment_locations %}
+{% for sl in t.segment_locations %}
+        gp_segment_id {{ '%-4s' | format(sl.gp_segment_id) }} {{ sl.location if sl.location else '(in segment data directory)' }}
+{% endfor %}
+{% else %}
+        (none)
+{% endif %}
+
+{% endfor %}
+{% else %}
+  (no tablespaces)
+{% endif %}
+
+Databases ({{ _cluster_state.databases.count }}):
+{% if _cluster_state.databases.count | int > 0 %}
+{% for d in _cluster_state.databases.list %}
+  - {{ d.datname }}
+      owner:        {{ d.owner }}
+      encoding:     {{ d.encoding }}
+      collate:      {{ d.datcollate }}
+      ctype:        {{ d.datctype }}
+      tablespace:   {{ d.tablespace }}
+      istemplate:   {{ d.datistemplate }}
+      allowconn:    {{ d.datallowconn }}
+      connlimit:    {{ d.datconnlimit }}
+      acl:          {{ d.acl if d.acl else '(default)' }}
+{% endfor %}
+{% else %}
+  (none)
+{% endif %}
+
+Available extensions ({{ _cluster_state.extensions.available.count }} based on control files on disk):
+{% if _cluster_state.extensions.available.count | int > 0 %}
+  name                                  default_version       installed_version
+  ------------------------------------  --------------------  ---------------------
+{% for e in _cluster_state.extensions.available.list %}
+  {{ '%-36s' | format(e.name) }}  {{ '%-20s' | format(e.default_version) }}  {{ e.installed_version if e.installed_version else '(not installed)' }}
+{% endfor %}
+{% else %}
+  (none)
+{% endif %}
+
+Installed extensions per database:
+{% if _cluster_state.extensions.installed_by_database | length > 0 %}
+{% for dbname, exts in (_cluster_state.extensions.installed_by_database | dictsort) %}
+  {{ dbname }}{% if exts | length == 0 %} (none){% endif %}:
+{% for e in exts %}
+    - {{ e.extname }} ({{ e.extversion }})
+{% endfor %}
+{% endfor %}
+{% else %}
+  (no databases queried -- all databases have datallowconn = false?)
+{% endif %}
+
+Foreign data wrappers:
+{% if _cluster_state.fdw.wrappers | length > 0 %}
+{% for w in _cluster_state.fdw.wrappers %}
+  - {{ w.fdwname }} (owner: {{ w.owner }})
+      handler:   {{ w.handler }}
+      validator: {{ w.validator }}
+      options:   {{ w.fdwoptions if w.fdwoptions else '(none)' }}
+{% endfor %}
+{% else %}
+  (none)
+{% endif %}
+
+Foreign servers:
+{% if _cluster_state.fdw.servers | length > 0 %}
+{% for s in _cluster_state.fdw.servers %}
+  - {{ s.srvname }} (fdw: {{ s.fdw }}, owner: {{ s.owner }})
+      type:    {{ s.srvtype if s.srvtype else '(none)' }}
+      version: {{ s.srvversion if s.srvversion else '(none)' }}
+      options: {{ s.srvoptions if s.srvoptions else '(none)' }}
+{% endfor %}
+{% else %}
+  (none)
+{% endif %}
+
+Foreign user mappings:
+{% if _cluster_state.fdw.user_mappings | length > 0 %}
+{% for u in _cluster_state.fdw.user_mappings %}
+  - server {{ u.srvname }}, user {{ u.usename }}: {{ u.umoptions if u.umoptions else '(no options)' }}
+{% endfor %}
+{% else %}
+  (none)
+{% endif %}
+
+Default ACLs (pg_default_acl):
+{% if _cluster_state.pg_default_acl | length > 0 %}
+{% for a in _cluster_state.pg_default_acl %}
+  - role: {{ a.role }}, schema: {{ a.schema if a.schema else '(any)' }}, object_type: {{ a.object_type }}
+      acl: {{ a.acl }}
+{% endfor %}
+{% else %}
+  (none)
+{% endif %}
+
+Coordinator pg_hba.conf ({{ _cluster_state.pg_hba.path }}, comments removed):
+{% if _cluster_state.pg_hba.lines | length > 0 %}
+{% for line in _cluster_state.pg_hba.lines %}
+  {{ line }}
+{% endfor %}
+{% else %}
+  (empty after stripping comment lines)
+{% endif %}
+
+Coordinator pg_ident.conf ({{ _cluster_state.pg_ident.path }}, comments removed):
+{% if _cluster_state.pg_ident.lines | length > 0 %}
+{% for line in _cluster_state.pg_ident.lines %}
+  {{ line }}
+{% endfor %}
+{% else %}
+  (empty after stripping comment lines)
+{% endif %}
+
+Cluster hostfiles ({{ _cluster_state.files.hostfiles | length }} existing):
+{% if _cluster_state.files.hostfiles | length > 0 %}
+  size       mtime (UTC)           path
+  ---------  --------------------  --------------------------------------------------
+{% for f in _cluster_state.files.hostfiles %}
+  {{ '%9s' | format(f.size) }}  {{ '%-20s' | format(f.mtime_iso) }}  {{ f.path }}
+{% endfor %}
+{% else %}
+  (none)
+{% endif %}
+
+Cluster state output files (snapshot taken before this run wrote them; existing files were archived):
+  exists  size       mtime (UTC)           path
+  ------  ---------  --------------------  --------------------------------------------------
+{% for f in _cluster_state.files.cluster_state %}
+  {{ '%-6s' | format(f.exists) }}  {{ '%9s' | format(f.size) }}  {{ '%-20s' | format(f.mtime_iso) }}  {{ f.path }}
+{%   if f.exists %}
+      archived to: {{ f.renamed_to }}
+{%   endif %}
+{% endfor %}

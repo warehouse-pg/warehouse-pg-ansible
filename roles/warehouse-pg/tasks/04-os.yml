@@ -1,0 +1,286 @@
+---
+
+- name: Update /etc/hosts with cluster hosts
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    create: false
+    #owner: root
+    #group: root
+    #mode: "0644"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK - {{ cluster_name }}"
+    block: |
+      {% for host in _cluster_hosts_all %}
+      {{ hostvars[host]['ip_address'] }} {{ host }}
+      {% endfor %}
+  become: true
+  become_user: root
+
+- name: Set system hostname
+  ansible.builtin.hostname:
+    name: "{{ hostname }}"
+    use: systemd
+  become: true
+  become_user: root
+
+- name: Check whether WHPG_UNIX_USER already has an SSH private key
+  ansible.builtin.stat:
+    path: "{{ _whpg_user_info.home }}/.ssh/id_rsa"
+  register: _whpg_ssh_key_stat
+
+- name: Generate SSH keypair for WHPG_UNIX_USER
+  ansible.builtin.user:
+    name: "{{ WHPG_UNIX_USER }}"
+    generate_ssh_key: true
+    ssh_key_type: rsa
+    ssh_key_bits: 4096
+    ssh_key_comment: "{{ WHPG_UNIX_USER }}@{{ inventory_hostname }}"
+  register: _whpg_ssh_key
+  changed_when: _whpg_ssh_key.ssh_key_file is defined and _whpg_ssh_key is changed
+  when: not _whpg_ssh_key_stat.stat.exists
+
+- name: Prepare OS for Resource Groups
+  when: whpg_resource_management in ['group', 'group-v2']
+  block:
+    - name: Check for cgroup v1 cpu subsystem
+      ansible.builtin.stat:
+        path: /sys/fs/cgroup/cpu
+      register: _whpg_cgroup_v1_cpu
+
+    - name: Check for cgroup v2 unified hierarchy
+      ansible.builtin.stat:
+        path: /sys/fs/cgroup/cgroup.controllers
+      register: _whpg_cgroup_v2_unified
+
+    - name: Fail if no usable cgroup hierarchy is mounted
+      ansible.builtin.fail:
+        msg: >-
+          Neither cgroup v1 (/sys/fs/cgroup/cpu) nor cgroup v2
+          (/sys/fs/cgroup/cgroup.controllers) is available on
+          {{ inventory_hostname }}; cannot configure Resource Groups.
+      when:
+        - not _whpg_cgroup_v1_cpu.stat.exists
+        - not _whpg_cgroup_v2_unified.stat.exists
+
+    - name: Configure cgroup v1 for WarehousePG Resource Groups
+      when:
+        - whpg_resource_management == 'group'
+        - _whpg_cgroup_v1_cpu.stat.exists
+      become: true
+      become_user: root
+      block:
+        - name: Install libcgroup-tools (cgroup v1)
+          ansible.builtin.dnf:
+            name: libcgroup-tools
+            state: present
+          timeout: "{{ DNF_TIMEOUT }}"
+          register: _whpg_libcgroup_install
+          failed_when: false
+
+        - name: Fail if libcgroup-tools could not be installed
+          ansible.builtin.fail:
+            msg: >-
+              libcgroup-tools is required for cgroup v1 Resource Groups but
+              could not be installed on {{ inventory_hostname }}. Enable the
+              CRB / PowerTools repository and re-run the playbook.
+          when:
+            - _whpg_libcgroup_install.failures is defined
+            - (_whpg_libcgroup_install.failures | length) > 0
+
+        - name: Install /etc/cgconfig.d/gpdb.conf
+          ansible.builtin.copy:
+            dest: /etc/cgconfig.d/gpdb.conf
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              group gpdb {
+                  perm {
+                      task {
+                          uid = {{ WHPG_UNIX_USER }};
+                          gid = {{ WHPG_UNIX_GROUP }};
+                      }
+                      admin {
+                          uid = {{ WHPG_UNIX_USER }};
+                          gid = {{ WHPG_UNIX_GROUP }};
+                      }
+                  }
+                  cpu {
+                  }
+                  cpuacct {
+                  }
+                  cpuset {
+                  }
+                  memory {
+                  }
+              }
+          register: _whpg_cgconfig_file
+
+        - name: Enable cgconfig.service
+          ansible.builtin.systemd:
+            name: cgconfig.service
+            enabled: true
+            state: started
+
+        - name: Restart cgconfig.service when gpdb.conf changed
+          ansible.builtin.systemd:
+            name: cgconfig.service
+            state: restarted
+          when: _whpg_cgconfig_file is changed
+
+        - name: Verify cgroup v1 gpdb directories exist for each subsystem
+          ansible.builtin.stat:
+            path: "/sys/fs/cgroup/{{ item }}/gpdb"
+          register: _whpg_cgroup_v1_gpdb_dirs
+          loop:
+            - cpu
+            - cpuacct
+            - cpuset
+            - memory
+
+        - name: Fail if cgroup v1 gpdb directories are missing after cgconfig setup
+          ansible.builtin.fail:
+            msg: >-
+              cgroup v1 gpdb directories are missing on {{ inventory_hostname }}
+              after configuring cgconfig.service. Check the service status with
+              `systemctl status cgconfig.service` and the contents of
+              /etc/cgconfig.d/gpdb.conf.
+          when:
+            - (_whpg_cgroup_v1_gpdb_dirs.results
+                | selectattr('stat.exists', 'equalto', false)
+                | list | length) > 0
+
+    - name: Configure cgroup v2 for WarehousePG Resource Groups
+      when:
+        - _whpg_cgroup_v2_unified.stat.exists
+        - (whpg_resource_management == 'group-v2')
+          or (whpg_resource_management == 'group' and not _whpg_cgroup_v1_cpu.stat.exists)
+      become: true
+      become_user: root
+      block:
+        - name: Install gpdb-cgroup.service systemd unit
+          ansible.builtin.copy:
+            dest: /etc/systemd/system/gpdb-cgroup.service
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              [Unit]
+              Description=WarehousePG cgroup v2 setup
+              After=local-fs.target
+
+              [Service]
+              Type=oneshot
+              RemainAfterExit=yes
+              # Greenplum 7 uses two different cgroup paths for resource groups:
+              # gpconfig validation checks /sys/fs/cgroup/gpdb/, but the
+              # postmaster's initCgroup() at startup uses /sys/fs/cgroup/gpdb.service/.
+              # Both must exist with the same permissions for the cluster to
+              # start in 'group-v2' mode.
+              ExecStart=/bin/mkdir -p /sys/fs/cgroup/gpdb
+              ExecStart=/bin/mkdir -p /sys/fs/cgroup/gpdb.service
+              # Enable controllers BEFORE chown -R: the kernel creates the
+              # per-controller files (cpu.max, memory.max, io.max, ...) only
+              # once a controller is listed in the parent's subtree_control.
+              # If we chown before enabling, the controller files are born
+              # owned by root and never get re-chowned.
+              ExecStart=/bin/sh -c 'echo "+cpu +cpuset +memory +io" > /sys/fs/cgroup/cgroup.subtree_control'
+              ExecStart=/bin/sh -c 'echo "+cpu +cpuset +memory +io" > /sys/fs/cgroup/gpdb/cgroup.subtree_control'
+              ExecStart=/bin/sh -c 'echo "+cpu +cpuset +memory +io" > /sys/fs/cgroup/gpdb.service/cgroup.subtree_control'
+              ExecStart=/bin/chown -R {{ WHPG_UNIX_USER }}:{{ WHPG_UNIX_GROUP }} /sys/fs/cgroup/gpdb
+              ExecStart=/bin/chown -R {{ WHPG_UNIX_USER }}:{{ WHPG_UNIX_GROUP }} /sys/fs/cgroup/gpdb.service
+              # The Broadcom Greenplum 7 docs ("Configuring cgroup v2") recommend
+              # `chmod a+w /sys/fs/cgroup/cgroup.procs`, but that lets any local
+              # user move arbitrary processes between cgroups. The kernel only
+              # consults standard Unix permissions on cgroup.procs, so chown'ing
+              # the file to {{ WHPG_UNIX_USER }}:{{ WHPG_UNIX_GROUP }} with mode
+              # 0660 gives Greenplum exactly the write access it needs without
+              # opening it up to other users on the host.
+              ExecStart=/bin/chown {{ WHPG_UNIX_USER }}:{{ WHPG_UNIX_GROUP }} /sys/fs/cgroup/cgroup.procs
+              ExecStart=/bin/chmod 0660 /sys/fs/cgroup/cgroup.procs
+
+              [Install]
+              WantedBy=multi-user.target
+          register: _whpg_gpdb_cgroup_unit
+
+        - name: Reload systemd when gpdb-cgroup unit changed
+          ansible.builtin.systemd:
+            daemon_reload: true
+          when: _whpg_gpdb_cgroup_unit is changed
+
+        - name: Enable gpdb-cgroup.service
+          ansible.builtin.systemd:
+            name: gpdb-cgroup.service
+            enabled: true
+            state: started
+
+        - name: Restart gpdb-cgroup.service when unit changed (re-runs ExecStart)
+          ansible.builtin.systemd:
+            name: gpdb-cgroup.service
+            state: restarted
+          when: _whpg_gpdb_cgroup_unit is changed
+
+        - name: Verify cgroup v2 gpdb directories exist
+          ansible.builtin.stat:
+            path: "{{ item }}"
+          register: _whpg_cgroup_v2_gpdb_dirs
+          loop:
+            - /sys/fs/cgroup/gpdb
+            - /sys/fs/cgroup/gpdb.service
+
+        - name: Fail if any cgroup v2 gpdb directory is missing after setup
+          ansible.builtin.fail:
+            msg: >-
+              {{ item.item }} is missing on {{ inventory_hostname }} after
+              starting gpdb-cgroup.service. Check
+              `systemctl status gpdb-cgroup.service` for details.
+          loop: "{{ _whpg_cgroup_v2_gpdb_dirs.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+          when: not (item.stat.exists | default(false))
+
+        - name: Verify root cgroup.procs is owned by {{ WHPG_UNIX_USER }}
+          ansible.builtin.stat:
+            path: /sys/fs/cgroup/cgroup.procs
+          register: _whpg_cgroup_v2_root_procs
+
+        - name: Fail if /sys/fs/cgroup/cgroup.procs is not writable by {{ WHPG_UNIX_USER }}
+          ansible.builtin.fail:
+            msg: >-
+              /sys/fs/cgroup/cgroup.procs on {{ inventory_hostname }} is not
+              owned by {{ WHPG_UNIX_USER }}. gpdb-cgroup.service should have
+              chowned it; check `systemctl status gpdb-cgroup.service` and
+              `stat /sys/fs/cgroup/cgroup.procs`.
+          when: (_whpg_cgroup_v2_root_procs.stat.pw_name | default('')) != WHPG_UNIX_USER
+
+        - name: Verify cgroup v2 controller files are owned by {{ WHPG_UNIX_USER }}
+          ansible.builtin.stat:
+            path: "{{ item }}"
+          register: _whpg_cgroup_v2_controller_files
+          loop:
+            - /sys/fs/cgroup/gpdb/cpu.max
+            - /sys/fs/cgroup/gpdb/memory.max
+            - /sys/fs/cgroup/gpdb/io.max
+            - /sys/fs/cgroup/gpdb.service/cpu.max
+            - /sys/fs/cgroup/gpdb.service/memory.max
+            - /sys/fs/cgroup/gpdb.service/io.max
+
+        - name: Fail if cgroup v2 controller files are not owned by {{ WHPG_UNIX_USER }}
+          ansible.builtin.fail:
+            msg: >-
+              Controller file {{ item.item }} on {{ inventory_hostname }} is
+              not owned by {{ WHPG_UNIX_USER }} (owner: {{ item.stat.pw_name | default('missing') }}).
+              The controllers were likely not enabled in cgroup.subtree_control
+              before chown ran; check `systemctl status gpdb-cgroup.service`.
+          loop: "{{ _whpg_cgroup_v2_controller_files.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+          when:
+            - item.stat.exists | default(false)
+            - (item.stat.pw_name | default('')) != WHPG_UNIX_USER
+
+- name: Prepare OS for Resource Queues
+  when: whpg_resource_management == 'queue'
+  block:
+    - name: Resource Queues require no additional OS preparation
+      ansible.builtin.debug:
+        msg: "Resource Queues are enabled; no OS-level preparation is required."

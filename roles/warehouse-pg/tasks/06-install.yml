@@ -1,0 +1,254 @@
+---
+
+- name: Set version subdirectory
+  ansible.builtin.set_fact:
+    _whpg_version_subdir: "{{ (whpg_use_versioned_directories | bool) | ternary('v' ~ whpg_major_version ~ '/', '') }}"
+
+- name: Calculate data directories for each role
+  ansible.builtin.set_fact:
+    whpg_coordinator_data_directory: "{{ whpg_data_directory }}/{{ _whpg_version_subdir }}coordinator"
+    whpg_standby_data_directory: "{{ whpg_data_directory }}/{{ _whpg_version_subdir }}standby"
+    whpg_segment_data_directory: "{{ whpg_data_directory }}/{{ _whpg_version_subdir }}segment"
+    whpg_segment_mirror_directory: "{{ whpg_data_directory }}/{{ _whpg_version_subdir }}mirror"
+
+- name: Check if segment data directory exists
+  ansible.builtin.stat:
+    path: "{{ whpg_segment_data_directory }}"
+  register: _whpg_segment_data_dir_stat
+  become: true
+  become_user: root
+  when: whpg_role == 'segment'
+
+- name: Scan segment data directory for immediate subdirectories
+  ansible.builtin.find:
+    paths: "{{ whpg_segment_data_directory }}"
+    file_type: directory
+    recurse: false
+  register: _whpg_segment_subdirs
+  changed_when: false
+  become: true
+  become_user: root
+  when:
+    - whpg_role == 'segment'
+    - _whpg_segment_data_dir_stat.stat.exists | default(false)
+    - _whpg_segment_data_dir_stat.stat.isdir | default(false)
+
+- name: Record segment subdirectory count mismatch
+  ansible.builtin.set_fact:
+    _whpg_segment_subdir_count_mismatch: >-
+      {{ ((_whpg_segment_subdirs.files | default([])) | length) > 0
+         and ((_whpg_segment_subdirs.files | default([])) | length) != (whpg_seg_num | int) }}
+  when: whpg_role == 'segment'
+
+- name: Fail if any segment host has wrong number of subdirectories in segment data directory
+  ansible.builtin.fail:
+    msg: >-
+      Segment data directory {{ whpg_segment_data_directory }} must contain
+      either 0 (uninitialized) or {{ whpg_seg_num }} immediate subdirectories.
+      Hosts failing this check:
+      {{ ansible_play_hosts
+         | map('extract', hostvars)
+         | selectattr('_whpg_segment_subdir_count_mismatch', 'defined')
+         | selectattr('_whpg_segment_subdir_count_mismatch')
+         | map(attribute='inventory_hostname')
+         | list | join(', ') }}
+  run_once: true
+  when:
+    - (ansible_play_hosts
+        | map('extract', hostvars)
+        | selectattr('_whpg_segment_subdir_count_mismatch', 'defined')
+        | selectattr('_whpg_segment_subdir_count_mismatch')
+        | list | length) > 0
+
+- name: Install gpinitsystem configuration file on coordinator
+  ansible.builtin.template:
+    src: "gpinitsystem_config-v{{ whpg_major_version }}.j2"
+    dest: "{{ _whpg_user_info.home }}/gpinitsystem_config_{{ cluster_name }}"
+    owner: "{{ WHPG_UNIX_USER }}"
+    group: "{{ WHPG_UNIX_GROUP }}"
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  when: whpg_role == 'coordinator'
+
+- name: Install gpinitsystem configuration file on standby
+  ansible.builtin.template:
+    src: "gpinitsystem_config-v{{ whpg_major_version }}.j2"
+    dest: "{{ _whpg_user_info.home }}/gpinitsystem_config_{{ cluster_name }}"
+    owner: "{{ WHPG_UNIX_USER }}"
+    group: "{{ WHPG_UNIX_GROUP }}"
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  when: whpg_role == 'standby'
+
+- name: Read COORDINATOR_DIRECTORY from gpinitsystem config
+  ansible.builtin.shell:
+    cmd: >-
+      awk -F= '/^COORDINATOR_DIRECTORY=/ {sub(/^COORDINATOR_DIRECTORY=/,""); print; exit}'
+      {{ _whpg_user_info.home }}/gpinitsystem_config_{{ cluster_name }}
+  register: _whpg_coordinator_directory
+  changed_when: false
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  when: whpg_role == 'coordinator'
+
+- name: Read SEG_PREFIX from gpinitsystem config
+  # note that SEG_PREFIX is built from $whpg_seg_prefix, but "default" is replaced
+  ansible.builtin.shell:
+    cmd: >-
+      awk -F= '/^SEG_PREFIX=/ {sub(/^SEG_PREFIX=/,""); print; exit}'
+      {{ _whpg_user_info.home }}/gpinitsystem_config_{{ cluster_name }}
+  register: _whpg_seg_prefix_value
+  changed_when: false
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  when: whpg_role == 'coordinator'
+
+- name: Build coordinator postgresql.conf path
+  ansible.builtin.set_fact:
+    _whpg_coordinator_postgresql_conf: >-
+      {{ _whpg_coordinator_directory.stdout | trim }}/{{ _whpg_seg_prefix_value.stdout | trim }}-1/postgresql.conf
+  when: whpg_role == 'coordinator'
+
+- name: Build coordinator pg_hba.conf path
+  ansible.builtin.set_fact:
+    _whpg_coordinator_pg_hba_conf: >-
+      {{ _whpg_coordinator_directory.stdout | trim }}/{{ _whpg_seg_prefix_value.stdout | trim }}-1/pg_hba.conf
+  when: whpg_role == 'coordinator'
+
+- name: Build coordinator PG_VERSION path
+  ansible.builtin.set_fact:
+    _whpg_coordinator_pg_version: >-
+      {{ _whpg_coordinator_directory.stdout | trim }}/{{ _whpg_seg_prefix_value.stdout | trim }}-1/PG_VERSION
+  when: whpg_role == 'coordinator'
+
+- name: Check if coordinator PG_VERSION file exists
+  ansible.builtin.stat:
+    path: "{{ _whpg_coordinator_pg_version | trim }}"
+  register: _whpg_coordinator_pg_version_stat
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  when: whpg_role == 'coordinator'
+
+- name: Read coordinator PG_VERSION file
+  ansible.builtin.slurp:
+    src: "{{ _whpg_coordinator_pg_version | trim }}"
+  register: _whpg_coordinator_pg_version_content
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  when:
+    - whpg_role == 'coordinator'
+    - _whpg_coordinator_pg_version_stat.stat.exists | default(false)
+
+- name: Refuse to install WarehousePG 6
+  ansible.builtin.fail:
+    msg: "Installing WarehousePG 6 is not yet supported"
+  when:
+    - whpg_role == 'coordinator'
+    - _whpg_coordinator_pg_version_stat.stat.exists | default(false)
+    - whpg_major_version | int == 6
+
+- name: Validate coordinator PG_VERSION matches expected major version
+  ansible.builtin.fail:
+    msg: >-
+      Unexpected PG_VERSION '{{ _whpg_coordinator_pg_version_content.content | b64decode | trim }}'
+      in {{ _whpg_coordinator_pg_version | trim }};
+      WarehousePG {{ whpg_major_version }} requires PG_VERSION 12
+  when:
+    - whpg_role == 'coordinator'
+    - _whpg_coordinator_pg_version_stat.stat.exists | default(false)
+    - whpg_major_version | int == 7
+    - (_whpg_coordinator_pg_version_content.content | b64decode | trim) != '12'
+
+- name: Install warehouse-pg and backup packages
+  when: whpg_install_packages | bool
+  block:
+    - name: Install warehouse-pg package
+      ansible.builtin.dnf:
+        name: "warehouse-pg-{{ whpg_major_version }}"
+        state: "{{ _whpg_dnf_state }}"
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+
+    - name: Install whpg-backup package
+      ansible.builtin.dnf:
+        name: "whpg-backup"
+        state: "{{ _whpg_dnf_state }}"
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+      when:
+        - whpg_install_backup | bool
+
+- name: Verify warehouse-pg and backup packages are installed
+  when: not (whpg_install_packages | bool)
+  block:
+    - name: Gather installed package facts
+      ansible.builtin.package_facts:
+        manager: auto
+
+    - name: Fail if warehouse-pg package is not installed
+      ansible.builtin.fail:
+        msg: >-
+          Package 'warehouse-pg-{{ whpg_major_version }}' is not installed and
+          whpg_install_packages is false. Install the package manually, or set
+          whpg_install_packages to true to let this role install it.
+      when: ('warehouse-pg-' ~ whpg_major_version) not in ansible_facts.packages
+
+    - name: Fail if whpg-backup package is not installed
+      ansible.builtin.fail:
+        msg: >-
+          Package 'whpg-backup' is not installed and whpg_install_packages is
+          false. Install the package manually, or set whpg_install_packages to
+          true to let this role install it.
+      when:
+        - whpg_install_backup | bool
+        - "'whpg-backup' not in ansible_facts.packages"
+
+- name: Set owner and group of whpg_data_directory
+  ansible.builtin.file:
+    path: "{{ whpg_data_directory }}"
+    owner: "{{ WHPG_UNIX_USER }}"
+    group: "{{ WHPG_UNIX_GROUP }}"
+    state: directory
+  become: true
+  become_user: root
+
+- name: Create data directory for this host's role
+  ansible.builtin.file:
+    path: "{{ {'coordinator': whpg_coordinator_data_directory,
+               'standby': whpg_standby_data_directory,
+               'segment': whpg_segment_data_directory}[whpg_role] }}"
+    state: directory
+    owner: "{{ WHPG_UNIX_USER }}"
+    group: "{{ WHPG_UNIX_GROUP }}"
+    mode: "0770"
+  become: true
+  become_user: root
+  when: whpg_role in ['coordinator', 'standby', 'segment']
+
+- name: Create segment data directory on coordinator when no segment hosts are defined
+  ansible.builtin.file:
+    path: "{{ whpg_segment_data_directory }}"
+    state: directory
+    owner: "{{ WHPG_UNIX_USER }}"
+    group: "{{ WHPG_UNIX_GROUP }}"
+    mode: "0770"
+  become: true
+  become_user: root
+  when:
+    - whpg_role == 'coordinator'
+    - (_cluster_count_segments | int) == 0
+
+- name: Create mirror data directory on segment hosts
+  ansible.builtin.file:
+    path: "{{ whpg_segment_mirror_directory }}"
+    state: directory
+    owner: "{{ WHPG_UNIX_USER }}"
+    group: "{{ WHPG_UNIX_GROUP }}"
+    mode: "0770"
+  become: true
+  become_user: root
+  when:
+    - whpg_seg_enable_mirrors | bool
+    - whpg_role == 'segment'
