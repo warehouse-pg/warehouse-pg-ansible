@@ -104,7 +104,9 @@ whpg_remove_old_logs: false
 # define path for "greenplum_path.sh" file, for easier migration later on
 greenplum_path: "/usr/local/greenplum-db/greenplum_path.sh"
 
-# Extensions: set to true to install the corresponding extension package
+# Extensions: set to true to install the corresponding extension package,
+# false to uninstall it, or to a string (NVR / NEVRA / path to .rpm) to
+# install that specific RPM. See the README for examples.
 whpg_extension_diskquota: false
 whpg_extension_fts_enhanced: false
 whpg_extension_hll: false

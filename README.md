@@ -323,7 +323,13 @@ See `roles/warehouse-pg/defaults/main.yml` for fully commented examples.
 
 ## Extensions
 
-The `warehouse-pg` role can install optional WarehousePG extensions. Each extension has an associated `whpg_extension_<name>` variable that defaults to `false`. Set the variable to `true` to install the extension's package. The role automatically selects the package matching `$whpg_major_version`; extensions that are not available for the configured major version are skipped.
+The `warehouse-pg` role can install optional WarehousePG extensions. Each extension has an associated `whpg_extension_<name>` variable that defaults to `false`. The variable accepts three kinds of values:
+
+- `true` — install the latest package matching `$whpg_major_version`. The package state honours `whpg_upgrade` (i.e. it is upgraded to the latest minor version when `whpg_upgrade` is `always-upgrade-to-latest-minor`, otherwise only installed if missing).
+- `false` — uninstall the extension package if it is currently installed.
+- a string — install the exact RPM identified by the string. The string is passed verbatim to `dnf` with `state: present`, so it may be a bare package name, an `name-version-release` (NVR), a full `name-version-release.arch` (NEVRA), or a path to a local `.rpm` file. The requested version is installed, upgraded, or downgraded as needed.
+
+The role automatically selects the package matching `$whpg_major_version` for the `true`/`false` cases; extensions that are not available for the configured major version are skipped.
 
 | Extension | Variable |
 |---|---|
@@ -341,6 +347,27 @@ The `warehouse-pg` role can install optional WarehousePG extensions. Each extens
 | user_profile | `whpg_extension_user_profile` |
 | vectorchord | `whpg_extension_vectorchord` |
 | whpg_fdw | `whpg_extension_whpg_fdw` |
+
+Examples:
+
+```yaml
+# Install the latest pgvector package for the configured major version
+whpg_extension_pgvector: true
+
+# Uninstall the diskquota package if currently installed
+whpg_extension_diskquota: false
+
+# Install a specific pgvector RPM by NVR
+whpg_extension_pgvector: "edb-whpg7-pgvector-0.7.4-1.el8"
+
+# Install a specific postgis RPM by full NEVRA
+whpg_extension_postgis: "edb-whpg6-postgis-3.3.2-1.el8.x86_64"
+
+# Install madlib from a local RPM file
+whpg_extension_madlib: "/var/tmp/edb-whpg7-madlib-2.1.0-1.el8.x86_64.rpm"
+```
+
+When `whpg_install_packages` is `false`, the role does not install or remove any packages and instead verifies that every extension marked with either `true` or a string value is already installed on the host (the base package name is checked, not a specific version).
 
 This step only installs the extension package. The extension must still be activated in the database, using the `CREATE EXTENSION` command.
 
