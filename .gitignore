@@ -1,0 +1,5 @@
+inventory.yml
+inventory-with-standby.yml
+terraform.tfstate
+.ansible_facts_cache/
+
