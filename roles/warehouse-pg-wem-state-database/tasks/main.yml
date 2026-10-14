@@ -1,5 +1,8 @@
 ---
 
+- name: Ensure acl is installed for unprivileged become
+  ansible.builtin.import_tasks: 00-acl.yml
+
 - name: Run pre-flight checks
   ansible.builtin.import_tasks: 01-pre-flight.yml
 

@@ -1,5 +1,7 @@
 ---
 
+# Remote host rules use password auth. Loopback keeps whatever it has unless
+# wem_state_db_local_trust says otherwise (see defaults).
 - name: Replace ident with md5 for host connections in pg_hba.conf
   ansible.builtin.replace:
     path: "{{ pg_data_dir }}/pg_hba.conf"
@@ -9,32 +11,22 @@
   become_user: postgres
   notify: Reload postgresql
 
-# Replace in-place so the trust rule wins without relying on insertion order.
-- name: Set trust auth for local IPv4 127.0.0.1/32 connections in pg_hba.conf
+- name: Set trust auth for loopback connections in pg_hba.conf
   ansible.builtin.replace:
     path: "{{ pg_data_dir }}/pg_hba.conf"
-    regexp: '^(host\s+all\s+all\s+127\.0\.0\.1/32)\s+\S+'
+    regexp: '^(host\s+all\s+all\s+(?:127\.0\.0\.1/32|::1/128))\s+\S+'
     replace: '\1 trust'
   become: true
   become_user: root
   notify: Reload postgresql
+  when: _wem_state_db_trust_requested | bool
 
-# On hosts where `localhost` resolves to ::1, the IPv4 rule above is bypassed.
-- name: Set trust auth for local IPv6 ::1/128 connections in pg_hba.conf
+- name: Require passwords for loopback connections in pg_hba.conf
   ansible.builtin.replace:
     path: "{{ pg_data_dir }}/pg_hba.conf"
-    regexp: '^(host\s+all\s+all\s+::1/128)\s+\S+'
-    replace: '\1 trust'
+    regexp: '^(host\s+all\s+all\s+(?:127\.0\.0\.1/32|::1/128))\s+trust$'
+    replace: '\1 md5'
   become: true
   become_user: root
   notify: Reload postgresql
-
-# Uncomment and set if not using trust auth in pg_hba.conf 
-# - name: Add WEM and Temporal pg_hba entries
-#   ansible.builtin.blockinfile:
-#     path: "{{ pg_data_dir }}/pg_hba.conf"
-#     regexp: '^(host\s+all\s+all\s+::1/128)\s+\S+'
-#     replace: '\1 trust'
-#   become: true
-#   become_user: root
-#   notify: Reload postgresql
+  when: _wem_state_db_trust_forbidden | bool

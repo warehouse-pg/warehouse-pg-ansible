@@ -12,11 +12,42 @@
       - ansible_facts["user_uid"] == 0
     fail_msg: "This role requires become: true — tasks must run as root."
 
-- name: Assert WEM state database user password is set when state DB is remote
+- name: Look for trust auth on loopback in an existing pg_hba.conf
+  ansible.builtin.command:
+    cmd: grep -qE '^host\s+all\s+all\s+(127\.0\.0\.1/32|::1/128)\s+trust' {{ pg_data_dir }}/pg_hba.conf
+  register: _wem_state_db_existing_trust
+  changed_when: false
+  # pg_hba.conf does not exist before the first install; grep exits 2 then.
+  failed_when: _wem_state_db_existing_trust.rc not in [0, 1, 2]
+  check_mode: false
+
+- name: Work out which loopback authentication applies
+  ansible.builtin.set_fact:
+    _wem_state_db_trust_requested: "{{ wem_state_db_local_trust | string | lower in ['true', '1', 'yes', 'y'] }}"
+    _wem_state_db_trust_forbidden: "{{ wem_state_db_local_trust | string | lower in ['false', '0', 'no', 'n'] }}"
+    _wem_state_db_trust_existing: "{{ _wem_state_db_existing_trust.rc == 0 }}"
+
+- name: Work out whether trust auth is in effect after this run
+  ansible.builtin.set_fact:
+    _wem_state_db_trust_in_effect: >-
+      {{ _wem_state_db_trust_requested
+         or (_wem_state_db_trust_existing and not _wem_state_db_trust_forbidden) }}
+
+- name: Warn that loopback trust auth is in effect
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: pg_hba.conf allows trust auth on 127.0.0.1 and ::1 for the WEM
+      state database. Any user with a shell on this host can connect without a
+      password. Set wem_state_db_local_trust: false and wem_state_db_password to
+      require passwords.
+  when: _wem_state_db_trust_in_effect | bool
+
+- name: Assert WEM state database user password is set
   ansible.builtin.assert:
     that:
       - wem_state_db_password | default('') | string | length > 0
     fail_msg: >-
-      wem_state_db_password is empty but wem_state_db_host is '{{ wem_state_db_host }}'.
-      A password is required when the state database is not on localhost.
-  when: wem_state_db_host not in ['127.0.0.1', 'localhost']
+      wem_state_db_password is empty. A password is required unless
+      wem_state_db_local_trust is true, or the existing pg_hba.conf already uses
+      trust on loopback and wem_state_db_local_trust is not false.
+  when: not (_wem_state_db_trust_in_effect | bool)

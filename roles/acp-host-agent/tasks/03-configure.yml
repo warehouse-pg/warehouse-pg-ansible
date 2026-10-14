@@ -1,0 +1,55 @@
+---
+
+- name: Discover data directory from running cluster
+  ansible.builtin.shell:
+    cmd: |
+      source {{ greenplum_path }}
+      psql -p {{ whpg_port }} -d postgres -tAc 'SHOW data_directory;'
+    executable: /bin/bash
+  become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
+  become_user: "{{ WHPG_UNIX_USER }}"
+  register: _whpg_coordinator_data_dir
+  changed_when: false
+  when: whpg_role == "coordinator"
+
+# The edb-acp-host-agent RPM ships /etc/edb/acp-host-agent/acp-host-agent.conf
+# as the default EnvironmentFile. We edit it in place so that RPM-shipped
+# comments and defaults remain visible to operators.
+
+- name: Set required values in acp-host-agent.conf
+  ansible.builtin.lineinfile:
+    path: "{{ acp_agent_config_file }}"
+    regexp: "^#?\\s*{{ item.key }}="
+    line: "{{ item.key }}={{ item.value }}"
+    state: present
+  loop:
+    - { key: "WEM_CONNECT_ADDRESS", value: "{{ wem_connect_address }}" }
+  become: true
+  notify: Restart acp-host-agent
+
+- name: Set optional values when provided
+  ansible.builtin.lineinfile:
+    path: "{{ acp_agent_config_file }}"
+    regexp: "^#?\\s*{{ item.key }}="
+    line: "{{ item.key }}={{ item.value }}"
+    state: present
+  loop:
+    - { key: "WEM_TASK_QUEUES",  value: "{{ wem_task_queues }}" }
+    - { key: "AGENT_ID",         value: "{{ agent_id }}" }
+    - { key: "AGENT_STATE_DIR",  value: "{{ agent_state_dir }}" }
+    - { key: "WEM_DATABASE",     value: "{{ wem_database }}" }
+    - { key: "WHPG_DATA_DIR",    value: "{{ _whpg_coordinator_data_dir.stdout | default('') | trim if whpg_role == 'coordinator' else '' }}" }
+    - { key: "AGENT_LOG_LEVEL",  value: "{{ agent_log_level }}" }
+  when: item.value | string | length > 0
+  no_log: true
+  become: true
+  notify: Restart acp-host-agent
+
+- name: Enable and start acp-host-agent service
+  ansible.builtin.systemd:
+    name: "{{ acp_agent_service_name }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+  become_user: root

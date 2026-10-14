@@ -1,0 +1,9 @@
+---
+
+- name: Install edb-otelcol package
+  ansible.builtin.dnf:
+    name: "{{ otelcol_gateway_package }}{{ '-' ~ otelcol_gateway_version if otelcol_gateway_version else '' }}"
+    state: "{{ _otelcol_dnf_state }}"
+  become: true
+  become_user: root
+  timeout: "{{ DNF_TIMEOUT }}"

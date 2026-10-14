@@ -1,0 +1,25 @@
+---
+
+# This role runs tasks as an unprivileged user via become_user. Ansible's
+# become-to-unprivileged-user fallback chain needs setfacl, so install acl
+# explicitly. RHEL/Rocky/Fedora 10+ dropped acl from the default install
+# (RHEL/UBI 9 still ships it); this is a no-op where it's already present.
+#
+# use_backend: auto4 prefers the classic dnf4 python bindings and only
+# falls back to dnf5 when dnf4 isn't installed (RHEL/Rocky 10+). Plain
+# ansible.builtin.package with pkg_mgr == dnf5 makes newer ansible-core
+# try to self-bootstrap python3-libdnf5, which doesn't exist in EL9
+# repos and fails the whole play on EL9 hosts.
+
+- name: Ensure acl package is installed (dnf/dnf5)
+  ansible.builtin.dnf:
+    name: acl
+    state: present
+    use_backend: auto4
+  when: ansible_facts['pkg_mgr'] in ['dnf', 'dnf5']
+
+- name: Ensure acl package is installed (yum)
+  ansible.builtin.yum:
+    name: acl
+    state: present
+  when: ansible_facts['pkg_mgr'] == 'yum'

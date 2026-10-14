@@ -23,7 +23,7 @@
 #                    Default: "gpadmin"
 #   greenplum_path   Path to greenplum_path.sh; sourced before running
 #                    psql/gpstate/etc.
-#                    Default: "/usr/local/greenplum-db/greenplum_path.sh"
+#                    Default: "/usr/edb/whpg7/greenplum_path.sh"
 #
 # tl;dr: each role must have the same $WHPG_UNIX_USER, $WHPG_UNIX_GROUP
 #        and $greenplum_path setting

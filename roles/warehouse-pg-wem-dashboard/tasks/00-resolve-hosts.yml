@@ -1,0 +1,52 @@
+---
+
+# _wem_prep_coordinator is set by 00-pre.yml, imported before this file.
+- name: Resolve WHPG coordinator connection host
+  vars:
+    _coord: "{{ hostvars[_wem_prep_coordinator] }}"
+  ansible.builtin.set_fact:
+    whpg_host: "{{ _coord['ip_address'] }}"
+  tags: always
+
+- name: Assert WHPG coordinator IP address was resolved
+  ansible.builtin.assert:
+    that:
+      - whpg_host is defined
+      - whpg_host | length > 0
+    fail_msg: >-
+      Could not resolve ip_address for coordinator '{{ _wem_prep_coordinator }}'.
+      Check that host's inventory entry.
+  tags: always
+
+# wem_host / monitoring_host are group vars on the cluster group (e.g. cluster_test).
+# Hosts outside that group (e.g. monitoring_instance) cannot see them directly,
+# so we pull them from the coordinator's hostvars and set them as facts here.
+# IPs are resolved in the same task to avoid an extra round-trip.
+#
+# wem_host_ip (this host's own IP) is NOT resolved here: this role's own
+# wem_agent_callback_base_url default looks it up directly via
+# hostvars[inventory_hostname], and the pg_hba_monitoring_wem.conf template in
+# the warehouse-pg role looks it up directly via groups['wem_stack'] — neither
+# needs it passed in as a variable.
+- name: Resolve WEM hosts and IP addresses
+  vars:
+    _coord: "{{ hostvars[_wem_prep_coordinator] }}"
+    _wem: "{{ hostvars[_coord['wem_host']] }}"
+    _mon: "{{ hostvars[_coord['monitoring_host'] | default(_coord['wem_host'])] }}"
+  ansible.builtin.set_fact:
+    wem_port:                    "{{ _wem['port'] | default(8080) }}"
+    clickhouse_host:             "{{ _mon['clickhouse_host'] | default(_mon['ip_address']) }}"
+    clickhouse_user:             "{{ _mon['clickhouse_user'] | default(clickhouse_user) }}"
+    gateway_collector_endpoint:  "{{ _wem['gateway_collector_endpoint'] | default('http://' ~ _mon['ip_address'] ~ ':4317' if _mon['gateway_collector_enabled'] | default(false) | bool else gateway_collector_endpoint) }}"
+  tags: always
+
+# Separate task so that no_log only hides the password, not the values above.
+- name: Resolve ClickHouse password
+  vars:
+    _coord: "{{ hostvars[_wem_prep_coordinator] }}"
+    _wem: "{{ hostvars[_coord['wem_host']] }}"
+    _mon: "{{ hostvars[_coord['monitoring_host'] | default(_coord['wem_host'])] }}"
+  ansible.builtin.set_fact:
+    clickhouse_password: "{{ _mon['clickhouse_password'] | default(clickhouse_password) }}"
+  no_log: true
+  tags: always

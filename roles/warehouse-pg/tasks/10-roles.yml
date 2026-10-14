@@ -2,7 +2,7 @@
 
 # Manages WarehousePG database roles defined in whpg_db_roles.
 # Each entry creates the role if missing, or updates the password if the role exists.
-# Run standalone with: ansible-playbook playbook.yml --tags roles
+# Run standalone with: ansible-playbook playbook.yml --tags whpgroles
 # Note: requires the cluster to be already deployed (gpadmin user must exist).
 
 - name: Refuse to manage reserved roles

@@ -1,7 +1,7 @@
 ---
 
 # Package name from EDB repository
-acp_agent_package_name: "acp-host-agent"
+acp_agent_package_name: "edb-acp-host-agent"
 # Pin a specific RPM version (e.g. "1.2.3"). Leave empty to install whatever
 # version the configured EDB repository provides.
 acp_agent_version: ""
@@ -22,68 +22,59 @@ acp_agent_service_name: "acp-host-agent"
 acp_agent_config_file: "/etc/edb/acp-host-agent/acp-host-agent.conf"
 
 # =============================================================================
-# Temporal Server Connection (REQUIRED)
+# WEM Connection (REQUIRED)
 # =============================================================================
-# Address of the Temporal frontend (host:port).
-# Defaults to localhost when Temporal is co-located on the same host.
-# Set temporal_host / temporal_frontend_grpc_port in inventory / group_vars
-# to point at the wem_stack host when Temporal runs on a different host.
-temporal_host: "localhost"
-temporal_frontend_grpc_port: 7233
-temporal_address: "{{ temporal_host }}:{{ temporal_frontend_grpc_port }}"
+# WEM_CONNECT_ADDRESS is the WEM relay address: wem_host_ip:(wem_port+1).
+# The agent connects to WEM's relay port.
+# Set wem_connect_host / wem_port in inventory / group_vars to point at the
+# wem_stack host when WEM runs on a different host.
+# Derived from the wem_host inventory entry (ip_address / port); falls back to
+# 127.0.0.1 / 8080 when wem_host is not set or not in inventory.
+wem_connect_host: "{{ hostvars[wem_host]['ip_address'] if wem_host is defined and wem_host in hostvars and 'ip_address' in hostvars[wem_host] else '127.0.0.1' }}"
+wem_port: "{{ hostvars[wem_host]['port'] if wem_host is defined and wem_host in hostvars and 'port' in hostvars[wem_host] else 8080 }}"
+# WEM_CONNECT_ADDRESS = wem_connect_host:(wem_port+1)
+wem_connect_address: "{{ wem_connect_host }}:{{ wem_port | int + 1 }}"
 
-acp_agent_temporal_address: "{{ temporal_address }}"
-# Temporal namespace to connect to (default in the RPM: wem)
-acp_agent_temporal_namespace: "wem"
-
-# Task queue this agent polls for activities (default in the RPM: remote-tasks)
-acp_agent_temporal_task_queue: "remote-tasks"
-
-# =============================================================================
-# Temporal Authentication (choose one; leave all empty for unauthenticated)
-# =============================================================================
-# Temporal Cloud: API key
-acp_agent_temporal_api_key: ""
-
-# mTLS: paths on the target host to the client certificate and private key
-acp_agent_temporal_tls_cert: ""
-acp_agent_temporal_tls_key: ""
-
-# mTLS: CA certificate to verify the server (self-hosted only)
-acp_agent_temporal_tls_server_ca_cert: ""
-
-# Override the server name used for TLS SNI (self-hosted only)
-acp_agent_temporal_tls_server_name: ""
+# Task queue(s) this agent polls for activities (optional).
+# Comma-separated to poll multiple queues, e.g.: coordinator-tasks,standby-tasks
+# Auto-derived from whpg_role if not explicitly set in inventory.
+# Leave empty to let the agent use its built-in default.
+# Here the queyes for coordinator and standby are set, all other hosts are left
+# empty and will be dynamically set by ACP Host Agent.
+wem_task_queues: >-
+  {{ 'coordinator-tasks' if whpg_role == 'coordinator'
+     else ('standby-tasks' if whpg_role == 'standby'
+     else '') }}
 
 # =============================================================================
 # Agent Identity (optional)
 # =============================================================================
 # Stable per-host identifier. Leave empty to auto-derive from DMI UUID / MAC.
-acp_agent_id: ""
+agent_id: ""
 
 # Directory where the Ed25519 enrollment keypair is stored.
 # Leave empty to keep the RPM default (/var/lib/edb/acp-host-agent).
-acp_agent_state_dir: ""
+agent_state_dir: ""
+
+# =============================================================================
+# WEM Database (optional)
+# =============================================================================
+# WHPG database psql connects to for WEM data (default: wem if unset).
+wem_database: ""
 
 # =============================================================================
 # WarehousePG Hub (optional — WHPG coordinator hosts only)
 # =============================================================================
-# Path to the WHPG installation. When set, the agent registers
-# whpg.cluster.* activity handlers. Leave empty on non-WHPG hosts.
-acp_agent_gphome: ""
-
 # WHPG port used to discover the coordinator's data directory via psql.
 whpg_port: 5432
 
 # Unix user that owns the WarehousePG installation.
-# Mirrors the warehouse-pg role default — override via inventory / group_vars
-# if you changed it there.
 WHPG_UNIX_USER: "gpadmin"
-greenplum_path: "/usr/local/greenplum-db/greenplum_path.sh"
+greenplum_path: "/usr/edb/whpg7/greenplum_path.sh"
 
 # =============================================================================
 # Logging
 # =============================================================================
-# Tracing filter: error | warn | info | debug | trace
-# Per-module syntax: info,host_agent=debug,temporalio_sdk=warn
-acp_agent_rust_log: "info"
+# Log level: error | warn | info | debug | trace
+# Per-module syntax: info,host_agent=debug
+agent_log_level: "info"

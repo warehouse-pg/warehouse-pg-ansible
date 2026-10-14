@@ -1,6 +1,6 @@
 ---
 
-# The whpg-enterprise-manager RPM ships /etc/wem/wem.conf with
+# The whpg-enterprise-manager RPM ships /etc/edb/wem/wem.conf with
 # %config(noreplace) and the %post scriptlet auto-generates WEM_COOKIE_SECRET
 # and WEM_ADMIN_PASSWORD when they are empty. We edit that file in place
 # rather than overwriting it from a template, so:
@@ -11,19 +11,35 @@
 #     touch a line when the corresponding Ansible variable is non-empty.
 #
 # The regexp `^#?\s*<KEY>=` matches both the uncommented form and the
-# commented "# <KEY>=..." example shipped in /etc/wem/wem.conf, so setting
+# commented "# <KEY>=..." example shipped in /etc/edb/wem/wem.conf, so setting
 # any optional knob also uncomments its example line.
 
-- name: Ensure /etc/wem/wem.conf ownership and mode
+# wem.conf holds database passwords and the cookie secret. The wem.service unit
+# runs as the RPM's dedicated `wem` account and systemd reads the file as root,
+# so only root and the `wem` group get access; gpadmin has none.
+- name: Ensure /etc/edb/wem/wem.conf ownership and mode
   ansible.builtin.file:
     path: "{{ wem_config_file }}"
     owner: root
-    group: "{{ WHPG_UNIX_GROUP }}"
+    group: "{{ wem_service_group }}"
     mode: "0640"
   become: true
   become_user: root
 
-- name: Set required WEM connection values in /etc/wem/wem.conf
+# "false" / "0" / "no" explicitly request secure cookies; an empty value means
+# "leave the file alone".
+- name: Empty WEM_INSECURE_COOKIES when secure cookies are requested
+  ansible.builtin.lineinfile:
+    path: "{{ wem_config_file }}"
+    regexp: "^#?\\s*WEM_INSECURE_COOKIES="
+    line: "WEM_INSECURE_COOKIES="
+    state: present
+  become: true
+  become_user: root
+  when: _wem_secure_cookies_requested
+  notify: Restart wem
+
+- name: Set required WEM connection values in /etc/edb/wem/wem.conf
   ansible.builtin.lineinfile:
     path: "{{ wem_config_file }}"
     regexp: "^#?\\s*{{ item.key }}="
@@ -42,7 +58,7 @@
       { 'key': 'WEM_USER',             'value': wem_state_db_user },
       { 'key': 'WEM_PASSWORD',         'value': wem_state_db_password | default('') },
       { 'key': 'PORT',                          'value': wem_port | string },
-      { 'key': 'WEM_INSECURE_COOKIES',          'value': wem_insecure_cookies },
+      { 'key': 'WEM_INSECURE_COOKIES',          'value': '' if _wem_secure_cookies_requested else wem_insecure_cookies },
       { 'key': 'WEM_AGENT_CALLBACK_BASE_URL',   'value': wem_agent_callback_base_url },
     ] | selectattr('value', 'ne', '') | list }}
   become: true
@@ -92,23 +108,13 @@
       { 'key': 'HIGH_LOAD_MODE',                     'value': wem_high_load_mode | default('') },
       { 'key': 'WHPG_MONITORING_DB',                 'value': whpg_monitoring_db | default('') },
       { 'key': 'LONG_RUNNING_THRESHOLD',             'value': wem_long_running_threshold | default('') },
-      { 'key': 'PROMETHEUS_URL',                     'value': wem_prometheus_url | default('') },
-      { 'key': 'LOKI_URL',                           'value': wem_loki_url | default('') },
-      { 'key': 'ALERTMANAGER_URL',                   'value': wem_alertmanager_url | default('') },
-      { 'key': 'WEM_EXPORTER_LOG_LEVEL',             'value': wem_exporter_log_level | default('') },
-      { 'key': 'WEM_EXPORTER_REMOTE_WRITE_ENABLED',  'value': wem_exporter_remote_write_enabled | default('') },
-      { 'key': 'WEM_EXPORTER_REMOTE_WRITE_INTERVAL', 'value': wem_exporter_remote_write_interval | default('') },
-      { 'key': 'WEM_EXPORTER_REMOTE_WRITE_TIMEOUT',  'value': wem_exporter_remote_write_timeout | default('') },
-      { 'key': 'WEM_REMOTE_WRITE_RECEIVER_ENABLED',  'value': wem_remote_write_receiver_enabled | default('') },
-      { 'key': 'WEM_REMOTE_WRITE_RECEIVER_PORT',     'value': wem_remote_write_receiver_port | default('') },
-      { 'key': 'WEM_REMOTE_WRITE_RECEIVER_TTL',      'value': wem_remote_write_receiver_ttl | default('') },
-      { 'key': 'WEM_REMOTE_WRITE_RECEIVER_TOKEN',    'value': wem_remote_write_receiver_token | default('') },
+      { 'key': 'CLICKHOUSE_URL',                     'value': wem_clickhouse_url | default('') },
+      { 'key': 'OTEL_GATEWAY_ENDPOINT',             'value': gateway_collector_endpoint | default('') },
       { 'key': 'WHPG_OS_USER',                       'value': wem_whpg_os_user | default('') },
       { 'key': 'WHPG_PXF_BIN',                       'value': wem_whpg_pxf_bin | default('') },
       { 'key': 'WHPG_PXF_BASE',                      'value': wem_whpg_pxf_base | default('') },
       { 'key': 'WHPG_PXF_OP_TIMEOUT_SECONDS',        'value': wem_whpg_pxf_op_timeout_seconds | default('') },
       { 'key': 'WHPG_ALLOW_ROOT',                    'value': wem_whpg_allow_root | default(false, true) | bool | string | lower },
-      { 'key': 'TEMPORAL_ADDRESS',                   'value': temporal_address | default('') },
     ] | selectattr('value', 'ne', '') | list }}
   become: true
   become_user: root

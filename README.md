@@ -8,6 +8,8 @@ Ansible roles for deploying and managing WarehousePG clusters.
 
 Installs the EDB package repository on Red Hat based systems. This role must run before `warehouse-pg`, in order to make the WarehousePG packages available.
 
+See [roles/edb-repository/README.md](roles/edb-repository/README.md) for details.
+
 #### EDB Token
 
 This role requires an EDB token and a repository name.
@@ -17,25 +19,48 @@ Set the variable `$edb_token` with the token, and the variable `$edb_repository`
 The repository name defaults to `dev`, can also be `gsupp` or another available repository.
 Ask your EDB contact for details.
 
+One example of how to read token and repository from a file on the Ansible controller, and add the variables to the inventory:
+
+```
+- name: Read EDB token and repository from local files
+  hosts: all
+  gather_facts: false
+  tags: always
+  tasks:
+    - name: Read token from local file
+      ansible.builtin.set_fact:
+        edb_token: "{{ lookup('file', lookup('env', 'HOME') ~ '/.edb-token') }}"
+        edb_repository: "{{ lookup('file', lookup('env', 'HOME') ~ '/.edb-repository') }}"
+      run_once: true
+```
+
+You don't have to follow this example, and can set the `$edb_token` and `$edb_repository` variables differently in your inventory.
+
 #### Installation process
 
-This role must run as root, and therefore requires Ansible `become` privileges (usually `sudo`). It will download a script which sets up the repository.
+These roles must run as root on the remote systems, and therefore require Ansible `become` privileges (usually `sudo`).
 
-If you do not want to run arbitrary scripts (`setup.sh`) as root, exclude this role and setup the repository manually.
+The `edb-repository` role will download a script which sets up the repository. If you do not want to run arbitrary scripts (`setup.sh`) as root, exclude this role and setup the repository manually.
 
 ### warehouse-pg
 
 Deploys and configures a WarehousePG cluster. Handles pre-flight validation, OS-level user/group setup, SSH key exchange, package installation, data directory calculation, and cluster hostfile generation.
 
-**Task flow:**
+**Task flow** (`roles/warehouse-pg/tasks/main.yml`):
 
-1. `pre-flight-checks.yml`: Validates all required and optional variables
-2. `unix-user.yml`: Creates the user and group specified in `$WHPG_UNIX_USER` and `$WHPG_UNIX_GROUP` (usually `gpadmin:gpadmin`)
-3. `hostfiles.yml`: Generates per-cluster hostfiles in the Unix user's home directory
-4. `os.yml`: Updates the `/etc/hosts` files on all cluster systems
-5. `ssh-keyexchange.yml`: Exchanges SSH keys across the cluster
-6. `install.yml`: Installs WarehousePG and optional backup packages, calculates data directories
-7. `initialize-database.yml`: Initializes the WarehousePG database
+1. `00-acl.yml`: Installs the `acl` package, required for `become_user` to an unprivileged user
+2. `01-pre-flight-checks.yml`: Validates all required and optional variables
+3. `02-unix-user.yml`: Creates the user and group specified in `$WHPG_UNIX_USER` and `$WHPG_UNIX_GROUP` (usually `gpadmin:gpadmin`)
+4. `03-hostfiles.yml`: Generates per-cluster hostfiles in the Unix user's home directory
+5. `04-os.yml`: Updates the `/etc/hosts` files on all cluster systems and prepares the OS (for example cgroups for resource groups)
+6. `05-ssh-keyexchange.yml`: Exchanges SSH keys across the cluster
+7. `06-install.yml`: Installs WarehousePG and optional backup packages, calculates data directories
+8. `07-initialize-database.yml`: Initializes the WarehousePG database, applies `pg_hba.conf` customizations, reconciles the standby and syncs resource groups or queues (coordinator only)
+9. `08-extensions.yml`: Installs or removes the optional extension packages
+10. `10-roles.yml`: Creates or updates database roles from `whpg_db_roles` (tag `whpgroles`)
+11. `09-expand-cluster.yml`: Expands the cluster when new segment hosts are added and `whpg_expand_db` is `true` (coordinator only)
+
+`11-update-pg-hba.yml` is not part of this flow. It is a standalone task file which updates `pg_hba.conf` on the coordinator, used by the `warehouse-pg-wem-dashboard` role and by `--tags update-pg-hba`.
 
 ### warehouse-pg-cluster-data
 
@@ -48,115 +73,128 @@ Writes two files into the Unix user's home directory on each coordinator:
 ~/cluster_state_<cluster_name>.json  # machine-readable
 ```
 
-Invoked as the last play of `playbook.yml`, or on its own via `ansible-playbook cluster-data.yml`.
+Can be run manually on its own via `ansible-playbook cluster-data.yml`, or as part of the general installation. Make sure it runs near the end, to capture the state after the installation.
 
 > **Note:** This role is **not idempotent**. It rewrites both `cluster_state_<cluster_name>.{txt,json}` files on every run; the `scanned_at` timestamp changes each time, and any drift in the cluster state will surface in the file contents. Expect every Ansible run to report this role as `changed`.
 
 ### warehouse-pg-wem-dashboard
 
-Installs the WarehousePG Enterprise Manager (WEM) on the host defined by `wem_host` — a monitoring and administration dashboard for WarehousePG. The role installs the `whpg-enterprise-manager` RPM, edits the RPM-shipped `/etc/wem/wem.conf` in place (preserving the shipped commented examples and any RPM-generated secrets), and enables the `wem` systemd service. Default user/password for WEM is admin/admin and 
-should be accesseible at http://<wem_host_ip>:8080/ prvoided filewall and security group settings are modifed
-correctly.
+Installs the WarehousePG Enterprise Manager (WEM) on the host defined by `wem_host` - a monitoring and administration dashboard for WarehousePG. The role installs the `whpg-enterprise-manager` RPM, edits the RPM-shipped `/etc/edb/wem/wem.conf` in place (preserving the shipped commented examples and any RPM-generated secrets), and enables the `wem` systemd service. Default user/password for WEM is admin/admin. WEM should be accessible at http://<wem_host_ip>:8080/, provided firewall and security group settings are modified correctly.
 
 See [roles/warehouse-pg-wem-dashboard/README.md](roles/warehouse-pg-wem-dashboard/README.md) for variables, prerequisites, and details.
 
-
 ### warehouse-pg-wem-state-database
 
-Installs PostgreSQL 15 on the host defined by `wem_host` via the DNF AppStream module. After installation, the role creates the WEM state database and user (`wem_admin`), the Temporal user and databases (`temporal`, `temporal_visibility`) required by `warehouse-pg-wem-workflow-manager`, and updates `pg_hba.conf` to allow passwordless trust auth for local connections. This role must run before `warehouse-pg-wem-workflow-manager`.
+Installs PostgreSQL 15 on the host defined by `wem_host` via the DNF AppStream module. After installation, the role creates the WEM state database and user (`wem_admin`) and updates `pg_hba.conf` to use trust auth for loopback connections (127.0.0.1 and ::1). This role must run before `warehouse-pg-wem-dashboard`.
 
 See [roles/warehouse-pg-wem-state-database/README.md](roles/warehouse-pg-wem-state-database/README.md) for variables and details.
 
-### warehouse-pg-wem-workflow-manager
+### warehouse-pg-clickhouse
 
-Installs the Temporal.io workflow service on the host defined by `wem_host`. WEM uses Temporal for background job scheduling and durable workflow execution.
+Installs `edb-clickhouse-server` and `edb-clickhouse-client` from the EDB repository on the hosts in the `monitoring_stack` inventory group. Configures `listen_host` (loopback plus the host's private `ip_address`), `http_port`, `tcp_port`, and logger settings via `config.d/`. Creates the `clickhouse_user` user with `clickhouse_password` in `users.d/`, and restricts the shipped `default` user (empty password) to loopback connections only. Starts the service via `clickhouse start`.
 
-See [roles/warehouse-pg-wem-workflow-manager/README.md](roles/warehouse-pg-wem-workflow-manager/README.md) for variables and details.
+See [roles/warehouse-pg-clickhouse/README.md](roles/warehouse-pg-clickhouse/README.md) for variables, prerequisites, and details.
 
-### warehouse-pg-observability-prometheus
+### warehouse-pg-gateway-collector
 
-Downloads and installs a Prometheus binary from GitHub releases. Configures scrape jobs for Prometheus self-monitoring and WEM metrics, with remote-write-receiver enabled.
+Installs `edb-otelcol` from the EDB repository on the hosts in the `monitoring_stack` inventory group (the same hosts as ClickHouse) and configures it as a central OTLP gateway. Receives telemetry from all cluster node agents over gRPC (port 4317) and HTTP (port 4318) and forwards it to ClickHouse over `127.0.0.1`. Only deployed when `gateway_collector_enabled: true` is set for the `monitoring_stack` host in inventory (on its host entry or in the cluster vars).
 
-See [roles/warehouse-pg-observability-prometheus/README.md](roles/warehouse-pg-observability-prometheus/README.md) for variables and details.
+Recommended when ClickHouse is shared by multiple WarehousePG clusters or by other services: the gateway gives all of them a single OTLP endpoint in front of ClickHouse. 
 
-### warehouse-pg-observability-loki
+The gateway also exposes the metrics it receives on a Prometheus scrape endpoint (`prometheus` exporter), so a Prometheus server can pull them in addition to the ClickHouse export:
 
-Downloads and installs a Loki binary from GitHub releases. Runs in single-binary filesystem mode for log aggregation.
+| Setting | Value | Meaning |
+|---|---|---|
+| `endpoint` | `otelcol_prometheus_endpoint`, default `127.0.0.1:8889` | Address and port the `/metrics` endpoint listens on. The default is loopback only, so Prometheus must run on the same host; set `otelcol_prometheus_endpoint` in inventory (e.g. `"<private-ip>:8889"`) to allow scraping from another host. |
+| `namespace` | `whpg` | Prefix added to every metric name, e.g. `whpg_<metric>`. |
+| `send_timestamps` | `true` | Each sample carries the timestamp from the original OTLP data point rather than the scrape time. |
+| `metric_expiration` | `180s` | A series that receives no new data for 3 minutes is dropped from the endpoint, so stopped nodes or removed metrics disappear. |
+| `resource_to_telemetry_conversion` | `enabled: true` | OTLP resource attributes (e.g. `host.name`, `service.name`) are added as labels on every metric, so series can be filtered per node. |
 
-See [roles/warehouse-pg-observability-loki/README.md](roles/warehouse-pg-observability-loki/README.md) for variables and details.
-
-### warehouse-pg-observability-alertmanager
-
-Downloads and installs an Alertmanager binary from GitHub releases with a minimal default-receiver configuration.
-
-See [roles/warehouse-pg-observability-alertmanager/README.md](roles/warehouse-pg-observability-alertmanager/README.md) for variables and details.
-
-### warehouse-pg-observability-collector
-
-Installs the `edb-whpg-observability-collector` package on all cluster nodes and enables Grafana Alloy. On the coordinator only, configures the collector and runs the `deploy-observability` script.
-
-See [roles/warehouse-pg-observability-collector/README.md](roles/warehouse-pg-observability-collector/README.md) for variables and details.
+See [roles/warehouse-pg-gateway-collector/README.md](roles/warehouse-pg-gateway-collector/README.md) for variables, prerequisites, and details.
 
 ### acp-host-agent
 
-Installs the `acp-host-agent` RPM on coordinator nodes only. Connects to `warehouse-pg-wem-workflow-manager` (Temporal) and registers `whpg.cluster.*` activity handlers for WEM remote cluster management.
+Installs the `edb-acp-host-agent` RPM on all cluster nodes (coordinator, standby, and segments). Connects to WEM and registers itself.
 
 See [roles/acp-host-agent/README.md](roles/acp-host-agent/README.md) for variables and details.
 
 ---
 
+## What gets installed where
 
-## Deployment Configuration (group_vars)
+The table shows what the playbook installs for `inventory-with-monitoring.yml`: one cluster (`cluster_test`) with a coordinator and segments, plus a separate `monitoring_instance` host that is in both `wem_stack` and `monitoring_stack`. Other inventories change the hosts (for example a standby adds one more host to the `warehouse-pg` and `acp-host-agent` rows), but not the roles.
 
-Ansible automatically loads variables from `group_vars/` based on group membership. This is the primary place to configure shared settings across roles without repeating them in every inventory file. Role `defaults/` serve as fallback values — `group_vars` overrides them for actual deployments.
+| Component | Role | Hosts | Condition |
+|---|---|---|---|
+| WarehousePG | `warehouse-pg` | all hosts in `whpg_clusters` (coordinator, standby, segments) | always |
+| WEM dashboard | `warehouse-pg-wem-dashboard` | `wem_stack` (`monitoring_instance`) | `wem_stack` is not empty |
+| Postgres (WEM state database) | `warehouse-pg-wem-state-database` | `wem_stack` (`monitoring_instance`) | `wem_stack` is not empty |
+| ClickHouse | `warehouse-pg-clickhouse` | `monitoring_stack` (`monitoring_instance`) | `monitoring_stack` is not empty |
+| OTel gateway collector (`edb-otelcol`) | `warehouse-pg-gateway-collector` | `monitoring_stack` (`monitoring_instance`) | `gateway_collector_enabled: true` on the monitoring host (off by default) |
+| ACP host agent | `acp-host-agent` | all hosts in `whpg_clusters` (coordinator, standby, segments) | `wem_stack` is not empty |
+| Temporal | none, bundled in the WEM RPM | `wem_stack` (`monitoring_instance`) | started by `wem.service`, listens on `127.0.0.1:7233` |
+| Alertmanager | none, bundled in the WEM RPM | `wem_stack` (`monitoring_instance`) | started by `wem.service`, listens on `127.0.0.1:9093` |
+| Loki | none | not installed | no role installs it (anymore) |
+| Prometheus | none | not installed | no role installs it (anymore), the OTel gateway collector only exposes a scrape endpoint |
+
+Notes:
+
+- The `warehouse-pg-cluster-data` role also runs on `whpg_clusters` and collects the cluster state.
+- The `edb-repository` role must run on every host that needs software from the EDB repository. Alternatively install the repository manually.
+- Temporal and Alertmanager are not separate systemd services. `wem serve` starts them as child processes, so they start and stop with the `wem` service. Both listen on loopback only.
+- The `alertmanager.yml` shipped with the WEM RPM (`/var/lib/edb/wem/alertmanager.yml`) routes by severity, but all email and Slack receivers are commented out. No notifications are sent until the file is edited. The roles do not manage it.
+
+## Deployment Configuration (host_vars, group_vars)
+
+Ansible automatically loads variables from `group_vars/` based on group membership. This is a good place to configure shared settings across roles without repeating them in every inventory file. Role `defaults/` serve as fallback values. `group_vars` will override defaults for actual deployments. Examples:
 
 ```
 group_vars/
   whpg_clusters/
-    vars.yml           # variables for cluster node specific deployment (observability collector, ACP host agent)
+    vars.yml           # variables for cluster node specific deployment (ACP host agent)
   wem_stack/
-    vars.yml           # variables for WEM stack hosts (PostgreSQL, Temporal, WEM dashboard)
-  monitoring_stack/    # [optional] create to override Prometheus/Loki/Alertmanager settings
-    vars.yml
+    vars.yml           # variables for WEM stack hosts (PostgreSQL state database, WEM dashboard)
+  monitoring_stack/
+    vars.yml           # variables for monitoring hosts (ClickHouse, OTel gateway collector)
 ```
 
-> **Note on dynamic groups:** `wem_stack` and `monitoring_stack` are built at runtime by the `add_host` pre-play. Ansible still loads `group_vars/wem_stack/` and `group_vars/monitoring_stack/` correctly for these dynamic groups because `group_vars` are resolved relative to the playbook directory at play execution time — by which point the host is already in the group.
+> **Note on groups:** `wem_stack` and `monitoring_stack` are groups defined in the inventory. Ansible loads `group_vars/wem_stack/` and `group_vars/monitoring_stack/` for the hosts in these groups like for any other group.
 
 ### All hosts (`group_vars/all/vars.yml`)
 
-Variables here apply to every host regardless of group — `whpg_clusters`, `wem_stack`, and `monitoring_stack`. Use this for variables that are shared between the cluster plays (which create the DB role) and the WEM plays (which connect to it).
+Variables here apply to every host regardless of group - `whpg_clusters`, `wem_stack`, and `monitoring_stack`. Use this for variables that are shared between the cluster plays (which create the DB role) and the WEM plays (which connect to it).
+
+| Variable | Default | Description |
+|---|---|---|
+| `whpg_user` | `wem_user` | WarehousePG database user created for WEM, and the user WEM connects as. |
+| `whpg_password` | _(set in inventory, required)_ | Password for `whpg_user`. No built-in default. |
+
+> **Note:** `whpg_user` and `whpg_password` are one set of variables used by two roles: `warehouse-pg` (the `pg_hba.conf` entries for WEM on the coordinator) and `warehouse-pg-wem-dashboard` (creates the database role and connects as it). Both roles must see the same values, so set them here, or in the cluster vars (`cluster_<name>/vars`), and not only for `wem_stack`. If `whpg_user` is overridden only for `wem_stack`, the next `--tags deploy` run rewrites the `pg_hba.conf` entries for the default `wem_user` and WEM loses access.
 
 ### WEM stack hosts (`group_vars/wem_stack/vars.yml`)
 
-Variables here apply only to hosts in the `wem_stack` group. The `wem_stack` group is built dynamically by the pre-play from the `wem_host` variable — set per-cluster in inventory (see [Inventory Examples](#inventory-examples)) or overridden at runtime with `-e wem_host=<host>`. This covers all three WEM components: warehouse-pg-wem-state-database, warehouse-pg-wem-workflow-manager, and WEM dashboard.
-
-To use external observability services instead of the local defaults, override `loki_host`, `prometheus_host`, or `alertmanager_host` here or via `-e`.
+Variables here apply only to hosts in the `wem_stack` group. The `wem_stack` group is defined in the inventory (see [Inventory Examples](#inventory-examples)). This covers warehouse-pg-wem-state-database and the WEM dashboard.
 
 | Variable | Default | Description |
 |---|---|---|
 | `pg_port` | `5433` | warehouse-pg-wem-state-database port for WEM state database |
-| `whpg_user` | `wem_user` | WarehousePG database user created for WEM |
-| `whpg_password` | _(set it using group_vars/wem_stack/vars.yml)_ | Password for `whpg_user` |
 | `whpg_port` | `5432` | WarehousePG coordinator port. |
 | `wem_state_db` | `wem` | WEM state database name |
 | `wem_state_db_host` | `127.0.0.1` | WEM state database host |
 | `wem_state_db_port` | `{{ pg_port }}` | WEM state database port |
 | `wem_state_db_user` | `wem_admin` | WEM state database user |
-| `wem_state_db_password` | _(empty)_ | WEM state database password. Leave empty to use trust auth (pg_hba.conf allows local connections without password). |
+| `wem_state_db_password` | _(empty)_ | WEM state database password. Leave empty to use trust auth. Required when `wem_state_db_host` is not localhost. |
 | `wem_port` | `8080` | Port the WEM web interface listens on. |
-| `wem_admin_password` | `admin` | Initial admin password. User need to reset on first login. |
-| `temporal_db_host` | `127.0.0.1` | warehouse-pg-wem-workflow-manager PostgreSQL host. Use explicit IPv4 to avoid `localhost` resolving to `::1`. |
-| `temporal_db_name` | `temporal` | warehouse-pg-wem-workflow-manager main database name |
-| `temporal_visibility_db_name` | `temporal_visibility` | Temporal visibility database name |
-| `temporal_db_user` | `temporal` | warehouse-pg-wem-workflow-manager database user |
-| `temporal_db_password` | _(empty)_ | warehouse-pg-wem-workflow-manager database password. Leave empty to use trust auth (pg_hba.conf allows local connections without password). |
-| `temporal_db_port` | `{{ pg_port }}` | warehouse-pg-wem-workflow-manager database port |
-| `temporal_address` | `localhost:7233` | warehouse-pg-wem-workflow-manager frontend address WEM connects to |
-| `wem_prometheus_url` | `http://localhost:9090` | Prometheus URL for WEM dashboard |
-| `wem_loki_url` | `http://localhost:3100` | Loki URL for WEM dashboard |
-| `wem_alertmanager_url` | `http://localhost:9093` | Alertmanager URL for WEM dashboard |
-
-To override observability endpoints (e.g. external Prometheus/Loki), set `loki_host`, `prometheus_host`, `alertmanager_host` in `group_vars/wem_stack/vars.yml` or pass via `-e`.
+| `wem_admin_password` | `admin` | Initial admin password. Reset on first login. |
+| `clickhouse_host` | _(monitoring_host ip_address)_ | ClickHouse host WEM connects to. Auto-resolved from the `monitoring_host` IP (or the `wem_host` IP when `monitoring_host` is not set); this must match the host in `monitoring_stack`. Override only when ClickHouse is not installed by this playbook. |
+| `clickhouse_tcp_port` | `9000` | ClickHouse native protocol port |
+| `clickhouse_user` | _(none - required)_ | ClickHouse user WEM and the gateway collector connect as. Created by the `warehouse-pg-clickhouse` role, which also restricts the shipped `default` user (empty password) to loopback connections only. Letters, digits and underscore only; must not be `default`. Set in inventory on `monitoring_host` (or in the cluster vars) - the WEM play reads it from there. |
+| `clickhouse_password` | _(none - required)_ | Password for `clickhouse_user`, at least 11 characters (`clickhouse_password_min_length`). Set in inventory next to `clickhouse_user`. |
+| `clickhouse_listen_hosts` | `["127.0.0.1", "<ip_address>"]` | Addresses ClickHouse binds to: loopback plus the host's private `ip_address`. Do not use `ansible_host` - on cloud hosts it is the public IP. |
+| `wem_clickhouse_url` | _(derived)_ | Full ClickHouse DSN written to `CLICKHOUSE_URL` in `wem.conf`. Auto-derived as `clickhouse://user:password@host:port`. **To bring your own ClickHouse**, set `wem_clickhouse_url` directly in inventory (e.g. `wem_clickhouse_url: "clickhouse://myuser:mypass@10.0.1.50:9000"`) - this overrides all individual `clickhouse_*` variables. |
+| `gateway_collector_enabled` | `false` | Set to `true` for `monitoring_host` (on its host entry or in the cluster vars) to install and configure the OTel gateway collector next to ClickHouse. |
+| `gateway_collector_endpoint` | _(empty)_ | OTLP gRPC endpoint written to `OTEL_GATEWAY_ENDPOINT` in `wem.conf`. Auto-derived as `http://<monitoring_host_ip>:4317` when `gateway_collector_enabled` is `true`. Override in inventory to use a different host or port. |
 
 <details>
 <summary>Full example: <code>group_vars/wem_stack/vars.yml</code></summary>
@@ -166,57 +204,43 @@ To override observability endpoints (e.g. external Prometheus/Loki), set `loki_h
 
 # =============================================================================
 # Shared configuration for the wem_stack group
-# Applies to all hosts in wem_stack (wem-state-database, wem-workflow-manager, wem-dashboard).
-# Role defaults serve as fallback — these values override them for deployments.
+# Applies to all hosts in wem_stack (wem-state-database, wem-dashboard).
+# Role defaults serve as fallback - these values override them for deployments.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
 # PostgreSQL state database settings (warehouse-pg-wem-state-database)
 # -----------------------------------------------------------------------------
 pg_port: 5433
-pg_db: "postgres"
-
-# -----------------------------------------------------------------------------
-# Temporal databases and user (warehouse-pg-wem-workflow-manager)
-# -----------------------------------------------------------------------------
-temporal_db_host: "127.0.0.1"
-temporal_db_port: "{{ pg_port }}"
-temporal_db_user: "temporal"
-temporal_db_name: "temporal"
-temporal_visibility_db_name: "temporal_visibility"
-temporal_default_namespace: "wem"
-# Leave empty to use trust auth (pg_hba.conf must allow it and postgres is installed locally)
-# temporal_db_password: ""
 
 # -----------------------------------------------------------------------------
 # WEM dashboard (warehouse-pg-wem-dashboard)
 # -----------------------------------------------------------------------------
 # Port the WEM web interface listens on. Leave it commented to use the default 8080.
 # wem_port: 8080
-# Initial password for the WEM web interface for user 'admin'. Leave it commented to
-# have the role auto-generate a password on first run.
+# Initial password for the WEM web interface for user 'admin' (default: admin).
+# Reset it on first login.
 wem_admin_password: "admin"
 #
 # -------------------------------------------------------------
 # WHPG Database connection settings for WEM dashboard.
 # -------------------------------------------------------------
 # If coordinator is in inventory, its IP is used automatically as whpg_host. 
-# If not, whpg_host from here will be usedor -e whpg_host= is used.
+# If not, whpg_host from here will be used, or -e whpg_host= is used.
 whpg_host: "localhost"
 
-# WHPG user for WEM dashboard to connect to the WarehousePG cluster.
-# This user must exist in the WarehousePG cluster and have super user privileges.
-whpg_user: "wem_user"
-
-# WHPG password for WEM dashboard to connect to the WarehousePG cluster.
-# Must be set by the operator — no built-in default.
-whpg_password: ""
+# WHPG user and password for WEM dashboard to connect to the WarehousePG cluster.
+# whpg_user and whpg_password are shared with the warehouse-pg role (pg_hba.conf
+# entries on the coordinator). Set them in group_vars/all/vars.yml or the cluster
+# vars, not here. See "All hosts" above.
+# whpg_user: "wem_user"
+# whpg_password: ""
 
 # WHPG port for WEM dashboard to connect to the WarehousePG cluster.
 whpg_port: 5432
 
 # WHPG database for WEM dashboard to connect to the WarehousePG cluster.
-# The database should be accesible for whpg_user metioned above.
+# The database should be accessible for whpg_user mentioned above.
 # If not provided/commented, the WEM dashboard will attempt to connect to the 
 # the default postgres database on the WarehousePG cluster and create wem database.
 # whpg_database: "wem"
@@ -241,46 +265,29 @@ wem_state_db_user: "wem_admin"
 # wem_state_db: "wem"
 
 # -------------------------------------------------------------
-# Workflow manager settings for WEM dashboard
+# ClickHouse connection for WEM dashboard
 # -------------------------------------------------------------
-temporal_address: "localhost:7233"
+clickhouse_host: "127.0.0.1"
+clickhouse_tcp_port: 9000
+clickhouse_user: "<clickhouse-user>"           # required, not "default"
+clickhouse_password: "<clickhouse-password>"   # required, at least 11 characters
 
-# -------------------------------------------------------------
-# Storage and monitoring settings for WEM dashboard
-# -------------------------------------------------------------
-alertmanager_host: "localhost"
-alertmanager_port: 9093
-loki_host: "localhost"
-loki_port: 3100
-prometheus_host: "localhost"
-prometheus_port: 9090
-
-wem_alertmanager_url: "http://{{ alertmanager_host }}:{{ alertmanager_port }}"
-wem_loki_url: "http://{{ loki_host }}:{{ loki_port }}"
-wem_prometheus_url: "http://{{ prometheus_host }}:{{ prometheus_port }}"
+wem_clickhouse_url: "clickhouse://{{ clickhouse_user }}:{{ clickhouse_password }}@{{ clickhouse_host }}:{{ clickhouse_tcp_port }}"
 ```
 
 </details>
 
 ### Cluster nodes (`group_vars/whpg_clusters/vars.yml`)
 
-Variables here apply to all hosts in the `whpg_clusters` group — coordinator and segment nodes. This covers the observability collector and ACP host agent, which are deployed on every cluster node.
+Variables here apply to all hosts in the `whpg_clusters` group - coordinator, standby, and segment nodes. This covers the ACP host agent, which is deployed on every cluster node.
 
-The playbook derives `loki_host`, `prometheus_host`, and `temporal_host` from `monitoring_host` and `wem_host` set in the inventory `cluster_test/vars` section. Override for a single run with `-e monitoring_host=<host>` or `-e wem_host=<host>`. If neither is set, the defaults below apply (`localhost`).
+The `acp-host-agent` role derives `wem_connect_host` and `wem_port` from `wem_host` set in the inventory `cluster_<name>/vars` section (where `<name>` matches `cluster_name`). Override for a single run with `-e wem_host=<host>`. If not set, the defaults (`127.0.0.1`, port `8080`) apply.
 
 | Variable | Default | Description |
 |---|---|---|
-| `loki_host` | `localhost` | Host where Loki is running |
-| `loki_port` | `3100` | Loki port |
-| `loki_endpoint` | `http://{{ loki_host }}:{{ loki_port }}/loki/api/v1/push` | Full Loki push endpoint for the collector |
-| `prometheus_host` | `localhost` | Host where Prometheus is running |
-| `prometheus_port` | `9090` | Prometheus port |
-| `prometheus_endpoint` | `http://{{ prometheus_host }}:{{ prometheus_port }}/api/v1/write` | Full Prometheus remote-write endpoint for the collector |
-| `temporal_host` | `localhost` | Host where Temporal is running |
-| `temporal_frontend_grpc_port` | `7233` | Temporal frontend gRPC port |
-| `temporal_address` | `{{ temporal_host }}:{{ temporal_frontend_grpc_port }}` | Temporal address for the ACP host agent |
-
-To point the collector at an external monitoring stack, override `loki_host` and `prometheus_host` in `group_vars/whpg_clusters/vars.yml` or pass via `-e`.
+| `wem_connect_host` | `127.0.0.1` | Host where WEM is running. Derived from `wem_host` set in inventory (`cluster_<name>/vars`); falls back to `127.0.0.1` when not set. Override per-run with `-e wem_host=<host>`. |
+| `wem_connect_address` | `{{ wem_connect_host }}:{{ wem_port + 1 }}` | WEM relay address for the ACP host agent (WEM port + 1) |
+| `wem_task_queues` | auto-derived from `whpg_role` | Task queue(s) the agent polls. Defaults: coordinator → `coordinator-tasks`, standby → `standby-tasks`. For segments no value is set and the agent uses its built-in default. Override in inventory to customise. |
 
 <details>
 <summary>Full example: <code>group_vars/whpg_clusters/vars.yml</code></summary>
@@ -289,36 +296,23 @@ To point the collector at an external monitoring stack, override `loki_host` and
 ---
 
 # =============================================================================
-# Shared configuration for node-level agents (collector + acp-host-agent)
+# Shared configuration for node-level agents (acp-host-agent)
 # Applies to all hosts in whpg_clusters.
 # =============================================================================
 
-greenplum_path: "/usr/local/greenplum-db/greenplum_path.sh"
-
-# -----------------------------------------------------------------------------
-# Observability collector (warehouse-pg-observability-collector)
-# -----------------------------------------------------------------------------
-# Loki and Prometheus endpoint to push logs and metrics.
-loki_host: "localhost"
-loki_port: 3100
-prometheus_host: "localhost"
-prometheus_port: 9090
-
-loki_endpoint: "http://{{ loki_host }}:{{ loki_port }}/loki/api/v1/push"
-prometheus_endpoint: "http://{{ prometheus_host }}:{{ prometheus_port }}/api/v1/write"
+greenplum_path: "/usr/edb/whpg7/greenplum_path.sh"
 
 # -----------------------------------------------------------------------------
 # ACP host agent (acp-host-agent)
 # -----------------------------------------------------------------------------
-# IP of the host running Temporal. Derived from wem_host if passed via -e;
-# falls back to 127.0.0.1. Override with -e acp_temporal_host=<ip> to point
-# at a Temporal instance running elsewhere.
-temporal_host : "localhost"
-temporal_frontend_grpc_port: 7233
-temporal_address: "{{ temporal_host }}:{{ temporal_frontend_grpc_port }}"
+# IP of the host running WEM. Derived from wem_host in the role defaults;
+# falls back to 127.0.0.1. The agent connects to WEM's relay port (wem_port + 1).
+# wem_connect_host: "127.0.0.1"
+wem_connect_address: "{{ wem_connect_host }}:{{ wem_port | int + 1 }}"
 
-# Data directory for the WarehousePG cluster.
-WHPG_DATA_DIR: " {{ whpg_data_dir | default('/whpgdata') }}"
+# Task queues - auto-derived from whpg_role (see defaults/main.yml).
+# Override here or in inventory to customise per node.
+# wem_task_queues: "coordinator-tasks"
 ```
 
 </details>
@@ -327,35 +321,44 @@ WHPG_DATA_DIR: " {{ whpg_data_dir | default('/whpgdata') }}"
 
 ## Inventory Examples
 
-Five inventory files are generated automatically by Terraform (`Testing/main.tf`). Choose the one that matches your deployment topology.
-
-| File | Nodes | `wem_host` / `monitoring_host` | What installs automatically (no `--tags`) |
-|---|---|---|---|
-| `inventory.yml` | coordinator + segments | not set | WarehousePG cluster only |
-| `inventory-with-standby.yml` | coordinator + standby + segments | not set | WarehousePG cluster only |
-| `inventory-with-monitoring.yml` | coordinator + segments + monitoring_instance | `monitoring_instance` | WarehousePG cluster + Observability stack + WEM stack + Observability collector + ACP host agent |
-| `inventory-with-standby-and-monitoring.yml` | coordinator + standby + segments + monitoring_instance | `monitoring_instance` | WarehousePG cluster (with standby) + Observability stack + WEM stack + Observability collector + ACP host agent |
-| `inventory-with-standby-as-monitoring.yml` | coordinator + standby + segments | `standby` | WarehousePG cluster (with standby) + Observability stack + WEM stack on standby + Observability collector + ACP host agent |
-
 `wem_host` and `monitoring_host` are set per-cluster in `cluster_test/vars` (not at `all/vars` level). They can be overridden per-run with `-e wem_host=<host>` or `-e monitoring_host=<host>`.
 
 All clusters are defined as children of `whpg_clusters`. Each host must have:
 - `whpg_role`: one of `coordinator`, `standby`, or `segment`
-- `ip_address`: private IP used to derive observability/WEM endpoint URLs at play-level
+- `ip_address`: private IP used to derive WEM endpoint URLs at play-level
 
-`wem_stack` and `monitoring_stack` groups are built dynamically by the playbook pre-play from `wem_host` and `monitoring_host`. No need to define them in inventory. Inventories with a **dedicated external monitoring host** (one that is not already in `whpg_clusters`) define a static `whpg_clusters_monitoring` group so that `hostvars` is populated for that host. When the standby doubles as the monitoring host it is already in `whpg_clusters` with full connection details — no extra group is needed.
+`wem_host` and `monitoring_host` select where each part of the stack runs:
 
-### inventory.yml — cluster only
+| Variable | Matching inventory group | What runs there |
+|---|---|---|
+| `wem_host` | `wem_stack` | WEM dashboard and its PostgreSQL state database |
+| `monitoring_host` | `monitoring_stack` | ClickHouse and the OTel gateway collector. |
 
-No `wem_host` or `monitoring_host` set. Pass them via `-e` to deploy WEM or observability.
+Set both to the same host to run everything on one host, or to different hosts to keep ClickHouse off the WEM host. WEM connects to ClickHouse and the gateway collector on the `monitoring_host` private IP.
+
+Three separate constructs work together:
+
+| Construct | Defined where | Purpose |
+|---|---|---|
+| `wem_host` / `monitoring_host` | `cluster_<name>/vars` | Name of the host whose IP address WEM, ClickHouse and the agents use. |
+| `wem_stack` / `monitoring_stack` | Static inventory groups | The hosts the WEM and ClickHouse / gateway collector plays run on. |
+| `whpg_clusters_monitoring` | Static inventory group | Connection details (`ansible_host`, `ip_address`, `hostname`) for a dedicated host that is not in `whpg_clusters`, so that `hostvars` is populated for it. The name of the child group below it (`monitoring_host_for_test` in the examples) is arbitrary. |
+
+> **Important:** the `wem_stack` and `monitoring_stack` groups are **not** derived from `wem_host` and `monitoring_host`. Define them in the inventory, each containing exactly the host named by the matching variable (`wem_stack` with `wem_host`, `monitoring_stack` with `monitoring_host`). Without the groups the plays are skipped: no WEM, ClickHouse, gateway collector or ACP host agent is deployed. The ACP host agent and the `pg_hba.conf` update for WEM only run when `wem_stack` is not empty.
+
+When the standby doubles as the WEM or monitoring host it is already in `whpg_clusters` with full connection details, so `whpg_clusters_monitoring` is not needed. The host still has to be listed in `wem_stack` and `monitoring_stack`.
+
+### inventory: cluster only
+
+Just a WarehousePG installation with one cluster, one coordinator host and two segment hosts.
+
+No `wem_host`, `monitoring_host`, `wem_stack` or `monitoring_stack` defined. Without a `wem_stack` group, no WEM stack, ClickHouse or ACP host agent is deployed.
 
 <details>
 <summary>Show example</summary>
 
 ```yaml
 all:
-  vars:
-    ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=30 -J <jumphost>"
   children:
     whpg_clusters:
       children:
@@ -364,38 +367,36 @@ all:
             cluster_name: test
             whpg_cluster_name: test
             whpg_data_directory: /data/whpg
-            ansible_python_interpreter: /usr/bin/python3
             whpg_host: <coordinator-private-ip>
           hosts:
             coordinator:
               ansible_host: <coordinator-public-ip>
-              ansible_user: rocky
-              ansible_ssh_private_key_file: /path/to/key.pem
               whpg_role: coordinator
               ip_address: <coordinator-private-ip>
               hostname: coordinator
             seg1:
               ansible_host: <seg1-public-ip>
-              ansible_user: rocky
-              ansible_ssh_private_key_file: /path/to/key.pem
               whpg_role: segment
               ip_address: <seg1-private-ip>
               hostname: seg1
+            seg2:
+              ansible_host: <seg2-public-ip>
+              whpg_role: segment
+              ip_address: <seg2-private-ip>
+              hostname: seg2
 ```
 
 </details>
 
-### inventory-with-standby.yml — cluster with standby
+### inventory: cluster with standby
 
-No `wem_host` or `monitoring_host` set. Pass them via `-e` to deploy WEM or observability.
+Coordinator, standby, two segment hosts.
 
 <details>
 <summary>Show example</summary>
 
 ```yaml
 all:
-  vars:
-    ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=30 -J <jumphost>"
   children:
     whpg_clusters:
       children:
@@ -404,151 +405,48 @@ all:
             cluster_name: test
             whpg_cluster_name: test
             whpg_data_directory: /data/whpg
-            ansible_python_interpreter: /usr/bin/python3
             whpg_host: <coordinator-private-ip>
           hosts:
             coordinator:
               ansible_host: <coordinator-public-ip>
-              ansible_user: rocky
-              ansible_ssh_private_key_file: /path/to/key.pem
-              whpg_role: coordinator
-              ip_address: <coordinator-private-ip>
-              hostname: coordinator
-            standby:
-              ansible_host: <standby-public-ip>
-              ansible_user: rocky
-              ansible_ssh_private_key_file: /path/to/key.pem
-              whpg_role: standby
-              ip_address: <standby-private-ip>
-              hostname: standby
-            seg1:
-              ansible_host: <seg1-public-ip>
-              ansible_user: rocky
-              ansible_ssh_private_key_file: /path/to/key.pem
-              whpg_role: segment
-              ip_address: <seg1-private-ip>
-              hostname: seg1
-```
-
-</details>
-
-### inventory-with-monitoring.yml — dedicated monitoring node
-
-`wem_host` and `monitoring_host` are set to `monitoring_instance` in `cluster_test/vars`. A static `monitoring_hosts` group defines the host so `hostvars` is populated.
-
-<details>
-<summary>Show example</summary>
-
-```yaml
-all:
-  vars:
-    ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=30 -J <jumphost>"
-  children:
-    whpg_clusters:
-      children:
-        cluster_test:
-          vars:
-            cluster_name: test
-            whpg_cluster_name: test
-            whpg_data_directory: /data/whpg
-            ansible_python_interpreter: /usr/bin/python3
-            whpg_host: <coordinator-private-ip>
-            wem_host: monitoring_instance
-            monitoring_host: monitoring_instance
-          hosts:
-            coordinator:
-              ansible_host: <coordinator-public-ip>
-              ansible_user: rocky
-              ansible_ssh_private_key_file: /path/to/key.pem
-              whpg_role: coordinator
-              ip_address: <coordinator-private-ip>
-              hostname: coordinator
-            seg1:
-              ansible_host: <seg1-public-ip>
-              ansible_user: rocky
-              ansible_ssh_private_key_file: /path/to/key.pem
-              whpg_role: segment
-              ip_address: <seg1-private-ip>
-              hostname: seg1
-    monitoring_hosts:
-      hosts:
-        monitoring_instance:
-          ansible_host: <monitoring-public-ip>
-          ansible_user: rocky
-          ansible_ssh_private_key_file: /path/to/key.pem
-          ip_address: <monitoring-private-ip>
-          hostname: monitoring
-```
-
-</details>
-
-### inventory-with-standby-and-monitoring.yml — standby + dedicated monitoring node
-
-<details>
-<summary>Show example</summary>
-
-```yaml
-all:
-  vars:
-    ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=30 -J <jumphost>"
-  children:
-    whpg_clusters:
-      children:
-        cluster_test:
-          vars:
-            cluster_name: test
-            whpg_cluster_name: test
-            whpg_data_directory: /data/whpg
-            ansible_python_interpreter: /usr/bin/python3
-            whpg_host: <coordinator-private-ip>
-            wem_host: monitoring_instance
-            monitoring_host: monitoring_instance
-          hosts:
-            coordinator:
-              ansible_host: <coordinator-public-ip>
-              ansible_user: rocky
-              ansible_ssh_private_key_file: /path/to/key.pem
               whpg_role: coordinator
               ip_address: <coordinator-private-ip>
               hostname: coordinator
             standby:
               ansible_host: <standby-public-ip>
-              ansible_user: rocky
-              ansible_ssh_private_key_file: /path/to/key.pem
               whpg_role: standby
               ip_address: <standby-private-ip>
               hostname: standby
             seg1:
               ansible_host: <seg1-public-ip>
-              ansible_user: rocky
-              ansible_ssh_private_key_file: /path/to/key.pem
               whpg_role: segment
               ip_address: <seg1-private-ip>
               hostname: seg1
-    monitoring_hosts:
-      hosts:
-        monitoring_instance:
-          ansible_host: <monitoring-public-ip>
-          ansible_user: rocky
-          ansible_ssh_private_key_file: /path/to/key.pem
-          ip_address: <monitoring-private-ip>
-          hostname: monitoring
+            seg2:
+              ansible_host: <seg2-public-ip>
+              whpg_role: segment
+              ip_address: <seg2-private-ip>
+              hostname: seg2
 ```
 
 </details>
 
-### inventory-with-standby-as-monitoring.yml — standby doubles as WEM/monitoring host
+### inventory: dedicated monitoring node
 
-The standby is already in `whpg_clusters` with full connection details. `wem_host` and `monitoring_host` point to `standby` in the cluster group vars — no separate monitoring group is needed.
+`wem_host` and `monitoring_host` are set to `monitoring_instance` in `cluster_test/vars`. The `wem_stack` and `monitoring_stack` groups both contain that host. A static `whpg_clusters_monitoring` group defines its connection details so `hostvars` is populated. Set `clickhouse_user` and `clickhouse_password` on the `monitoring_instance` host entry (the `monitoring_host`).
 
 <details>
 <summary>Show example</summary>
 
 ```yaml
 all:
-  vars:
-    ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=30 -J <jumphost>"
   children:
+    monitoring_stack:
+      hosts:
+        monitoring_instance: {}
+    wem_stack:
+      hosts:
+        monitoring_instance: {}
     whpg_clusters:
       children:
         cluster_test:
@@ -556,32 +454,193 @@ all:
             cluster_name: test
             whpg_cluster_name: test
             whpg_data_directory: /data/whpg
-            ansible_python_interpreter: /usr/bin/python3
             whpg_host: <coordinator-private-ip>
+            whpg_password: <whpg-password>   # required - password for whpg_user (WEM connects as it)
+            wem_host: monitoring_instance
+            monitoring_host: monitoring_instance
+          hosts:
+            coordinator:
+              ansible_host: <coordinator-public-ip>
+              whpg_role: coordinator
+              ip_address: <coordinator-private-ip>
+              hostname: coordinator
+            seg1:
+              ansible_host: <seg1-public-ip>
+              whpg_role: segment
+              ip_address: <seg1-private-ip>
+              hostname: seg1
+    whpg_clusters_monitoring:
+      children:
+        monitoring_host_for_test:
+          hosts:
+            monitoring_instance:
+              ansible_host: <monitoring-public-ip>
+              ip_address: <monitoring-private-ip>
+              hostname: monitoring
+              clickhouse_user: <clickhouse-user>           # required, not "default"
+              clickhouse_password: <clickhouse-password>   # required, at least 11 characters
+```
+
+</details>
+
+### inventory: standby + dedicated monitoring node
+
+<details>
+<summary>Show example</summary>
+
+```yaml
+all:
+  children:
+    monitoring_stack:
+      hosts:
+        monitoring_instance: {}
+    wem_stack:
+      hosts:
+        monitoring_instance: {}
+    whpg_clusters:
+      children:
+        cluster_test:
+          vars:
+            cluster_name: test
+            whpg_cluster_name: test
+            whpg_data_directory: /data/whpg
+            whpg_host: <coordinator-private-ip>
+            whpg_password: <whpg-password>   # required - password for whpg_user (WEM connects as it)
+            wem_host: monitoring_instance
+            monitoring_host: monitoring_instance
+          hosts:
+            coordinator:
+              ansible_host: <coordinator-public-ip>
+              whpg_role: coordinator
+              ip_address: <coordinator-private-ip>
+              hostname: coordinator
+            standby:
+              ansible_host: <standby-public-ip>
+              whpg_role: standby
+              ip_address: <standby-private-ip>
+              hostname: standby
+            seg1:
+              ansible_host: <seg1-public-ip>
+              whpg_role: segment
+              ip_address: <seg1-private-ip>
+              hostname: seg1
+    whpg_clusters_monitoring:
+      children:
+        monitoring_host_for_test:
+          hosts:
+            monitoring_instance:
+              ansible_host: <monitoring-public-ip>
+              ip_address: <monitoring-private-ip>
+              hostname: monitoring
+              clickhouse_user: <clickhouse-user>           # required, not "default"
+              clickhouse_password: <clickhouse-password>   # required, at least 11 characters
+```
+
+</details>
+
+### inventory: standby doubles as WEM/monitoring host
+
+The standby is already in `whpg_clusters` with full connection details. `wem_host` and `monitoring_host` point to `standby` in the cluster group vars, and the standby is listed in `wem_stack` and `monitoring_stack`. No `whpg_clusters_monitoring` group is needed.
+
+<details>
+<summary>Show example</summary>
+
+```yaml
+all:
+  children:
+    monitoring_stack:
+      hosts:
+        standby: {}
+    wem_stack:
+      hosts:
+        standby: {}
+    whpg_clusters:
+      children:
+        cluster_test:
+          vars:
+            cluster_name: test
+            whpg_cluster_name: test
+            whpg_data_directory: /data/whpg
+            whpg_host: <coordinator-private-ip>
+            whpg_password: <whpg-password>   # required - password for whpg_user (WEM connects as it)
             wem_host: standby
             monitoring_host: standby
+            clickhouse_user: <clickhouse-user>           # required, not "default"
+            clickhouse_password: <clickhouse-password>   # required, at least 11 characters
           hosts:
             coordinator:
               ansible_host: <coordinator-public-ip>
-              ansible_user: rocky
-              ansible_ssh_private_key_file: /path/to/key.pem
               whpg_role: coordinator
               ip_address: <coordinator-private-ip>
               hostname: coordinator
             standby:
               ansible_host: <standby-public-ip>
-              ansible_user: rocky
-              ansible_ssh_private_key_file: /path/to/key.pem
               whpg_role: standby
               ip_address: <standby-private-ip>
               hostname: standby
             seg1:
               ansible_host: <seg1-public-ip>
-              ansible_user: rocky
-              ansible_ssh_private_key_file: /path/to/key.pem
               whpg_role: segment
               ip_address: <seg1-private-ip>
               hostname: seg1
+```
+
+</details>
+
+### inventory: split WEM and monitoring hosts
+
+WEM (dashboard + state database) runs on `standby`, so `wem_stack` contains `standby`. ClickHouse and the gateway collector run on `monitoring_instance`, so `monitoring_stack` contains `monitoring_instance`. WEM connects to ClickHouse on `<monitoring-private-ip>:9000` and to the gateway on `<monitoring-private-ip>:4317`, using the `clickhouse_user` / `clickhouse_password` set on `monitoring_instance`.
+
+<details>
+<summary>Show example</summary>
+
+```yaml
+all:
+  children:
+    monitoring_stack:
+      hosts:
+        monitoring_instance: {}
+    wem_stack:
+      hosts:
+        standby: {}
+    whpg_clusters:
+      children:
+        cluster_test:
+          vars:
+            cluster_name: test
+            whpg_cluster_name: test
+            whpg_data_directory: /data/whpg
+            whpg_host: <coordinator-private-ip>
+            whpg_password: <whpg-password>         # required - password for whpg_user (WEM connects as it)
+            wem_host: standby                      # WEM dashboard + state database
+            monitoring_host: monitoring_instance   # ClickHouse + gateway collector
+          hosts:
+            coordinator:
+              ansible_host: <coordinator-public-ip>
+              whpg_role: coordinator
+              ip_address: <coordinator-private-ip>
+              hostname: coordinator
+            standby:
+              ansible_host: <standby-public-ip>
+              whpg_role: standby
+              ip_address: <standby-private-ip>
+              hostname: standby
+            seg1:
+              ansible_host: <seg1-public-ip>
+              whpg_role: segment
+              ip_address: <seg1-private-ip>
+              hostname: seg1
+    whpg_clusters_monitoring:
+      children:
+        monitoring_host_for_test:
+          hosts:
+            monitoring_instance:
+              ansible_host: <monitoring-public-ip>
+              ip_address: <monitoring-private-ip>
+              hostname: monitoring
+              clickhouse_user: <clickhouse-user>           # required, not "default"
+              clickhouse_password: <clickhouse-password>   # required, at least 11 characters
+              gateway_collector_enabled: true              # optional
 ```
 
 </details>
@@ -590,7 +649,7 @@ all:
 
 ## Usage
 
-Create an Ansible inventory which defines the roles for each server. See the `Inventory Example` section earlier in this document.
+Create an Ansible inventory which defines the roles for each server. See the `Inventory Example` section earlier.
 
 ### Playbook tags
 
@@ -598,32 +657,41 @@ The playbook uses tags to allow selective deployment of different parts of the s
 
 | Tag | Hosts | Requires | What runs |
 |---|---|---|---|
-| `deploy` | `whpg_clusters` | Any inventory | Full cluster deployment: OS prep, packages, cluster init, pg_hba, standby, resource management |
+| `always` | `all` | Any inventory | Reads the EDB token and repository from the local files (see [EDB Token](#edb-token)). Runs with every tag selection, and cannot be skipped by selecting other tags. |
+| `deploy` | `whpg_clusters` | Any inventory | Full cluster deployment: the `/data/whpg` directory, the `edb-repository` and `warehouse-pg` roles (OS prep, packages, cluster init, `pg_hba.conf`, standby, resource management, extensions, database roles from `whpg_db_roles`, expansion) |
+| `whpgroles` | `whpg_clusters` (acts on the coordinator) | Any inventory | Only the `warehouse-pg` task that creates or updates the database roles from `whpg_db_roles`. Also part of `deploy`. See [Database users](#database-users). |
 | `cluster-data` | `whpg_clusters` | Any inventory | Snapshot cluster state to `cluster_state_<name>.{txt,json}` |
-| `update-pg-hba` | `wem_stack` (delegates to coordinator) | Inventory with `wem_host` | Update `pg_hba.conf` on coordinator without a full deploy. Discovers paths via `psql`. |
-| `warehouse-pg-observability` | `monitoring_stack` (built from `monitoring_host`) | Inventory with `monitoring_host` | Deploy Prometheus, Loki, and Alertmanager |
-| `wem` | `wem_stack` (built from `wem_host`) | Inventory with `wem_host` | Deploy all WEM components: PostgreSQL, Temporal, and WEM dashboard |
-| `warehouse-pg-wem-state-database` | `wem_stack` (built from `wem_host`) | Inventory with `wem_host` | Install PostgreSQL state database only |
-| `warehouse-pg-wem-workflow-manager` | `wem_stack` (built from `wem_host`) | Inventory with `wem_host` | Install Temporal.io workflow service only |
-| `warehouse-pg-wem-dashboard` | `wem_stack` (built from `wem_host`) | Inventory with `wem_host` | Install WEM dashboard only |
-| `warehouse-pg-observability-collector` | `whpg_clusters` | Inventory with `monitoring_host` | Install observability collector and Grafana Alloy on all cluster nodes |
-| `acp-host-agent` | `whpg_clusters` (coordinator only) | Inventory with `wem_host` | Install ACP host agent on coordinator |
+| `update-pg-hba` | `wem_stack` (delegates to the coordinator) | Inventory with a `wem_stack` group | Creates the WEM database role (`whpg_user`, superuser) and adds the matching `pg_hba.conf` entries on the coordinator, without a full deploy. Discovers paths via `psql`. Runs the same tasks as `warehouse-pg-db-roles`. |
+| `warehouse-pg-db-roles` | `wem_stack` (delegates to the coordinator) | Inventory with a `wem_stack` group | Same tasks as `update-pg-hba`: the WEM database role and its `pg_hba.conf` entries. Only this one role is managed, other roles come from `whpg_db_roles` (tag `whpgroles`). |
+| `warehouse-pg-clickhouse` | `monitoring_stack` | Inventory with a `monitoring_stack` group | Install and configure ClickHouse on the monitoring host |
+| `warehouse-pg-gateway-collector` | `monitoring_stack` | Inventory with a `monitoring_stack` group + `gateway_collector_enabled: true` | Install and configure OTel gateway collector on the monitoring host |
+| `wem` | `wem_stack` | Inventory with a `wem_stack` group | Deploy all WEM components: PostgreSQL state database, WEM dashboard, including the WEM database role and `pg_hba.conf` entries. Does not include ClickHouse, the gateway collector or the ACP host agent. |
+| `warehouse-pg-wem-state-database` | `wem_stack` | Inventory with a `wem_stack` group | Install PostgreSQL state database only |
+| `warehouse-pg-wem-dashboard` | `wem_stack` | Inventory with a `wem_stack` group | Install WEM dashboard, including the WEM database role and `pg_hba.conf` entries |
+| `acp-host-agent` | `whpg_clusters` (all nodes) | Inventory with a `wem_stack` group (and `wem_host`) | Install ACP host agent on all cluster nodes |
+
+Notes on tags:
+
+- Tags can be combined, for example `--tags "wem,warehouse-pg-clickhouse"`.
+- `update-pg-hba` and `warehouse-pg-db-roles` select the same tasks. They are also run by `wem` and `warehouse-pg-wem-dashboard`.
+- `whpgroles` and `warehouse-pg-db-roles` are different: `whpgroles` applies `whpg_db_roles` from the inventory, `warehouse-pg-db-roles` only handles the role WEM connects as.
+- Every `--tags` run also runs the `always` play and the `Validate wem_host` / `Validate monitoring_host` checks for the selected tags.
 
 ### Examples
 
 #### Full stack deployment (no `--tags`)
 
-Run without tags — what deploys depends entirely on the inventory file. WEM and observability are deployed automatically when `wem_host`/`monitoring_host` are set in the inventory.
+Run without tags - what deploys depends entirely on the inventory file. ClickHouse, WEM, and ACP host agent are deployed automatically when the inventory has a `wem_stack` group (and a `monitoring_stack` group for ClickHouse).
 
-> **Note:** This also runs the `cluster-data` play on every execution, which is not idempotent (rewrites snapshot files each time). For repeated runs, prefer the explicit-tags approach in [Section 4](#section-4-all-at-once).
+> **Note:** This also runs the `cluster-data` play on every execution, which is not idempotent (rewrites snapshot files each time). For repeated runs, prefer the explicit-tags approach in [Selective deployment](#selective-deployment---tags).
 
 | Inventory | Command | What deploys |
 |---|---|---|
 | `inventory.yml` | `ansible-playbook -i inventory.yml playbook.yml` | WarehousePG cluster (coordinator + segments) |
 | `inventory-with-standby.yml` | `ansible-playbook -i inventory-with-standby.yml playbook.yml` | WarehousePG cluster (coordinator + standby + segments) |
-| `inventory-with-monitoring.yml` | `ansible-playbook -i inventory-with-monitoring.yml playbook.yml` | WarehousePG cluster + Observability stack, WEM stack (on monitoring_instance) + Collector + ACP host agent on all cluster nodes |
-| `inventory-with-standby-and-monitoring.yml` | `ansible-playbook -i inventory-with-standby-and-monitoring.yml playbook.yml` | WarehousePG cluster (with standby) + Observability stack, WEM stack (on monitoring_instance) + Collector + ACP host agent on all cluster nodes |
-| `inventory-with-standby-as-monitoring.yml` | `ansible-playbook -i inventory-with-standby-as-monitoring.yml playbook.yml` | WarehousePG cluster (with standby) + Observability stack, WEM (on standby) + Collector + ACP host agent on all cluster nodes |
+| `inventory-with-monitoring.yml` | `ansible-playbook -i inventory-with-monitoring.yml playbook.yml` | WarehousePG cluster + ClickHouse + WEM stack (on monitoring_instance) + ACP host agent on all cluster nodes |
+| `inventory-with-standby-and-monitoring.yml` | `ansible-playbook -i inventory-with-standby-and-monitoring.yml playbook.yml` | WarehousePG cluster (with standby) + ClickHouse + WEM stack (on monitoring_instance) + ACP host agent on all cluster nodes |
+| `inventory-with-standby-as-monitoring.yml` | `ansible-playbook -i inventory-with-standby-as-monitoring.yml playbook.yml` | WarehousePG cluster (with standby) + ClickHouse + WEM (on standby) + ACP host agent on all cluster nodes |
 
 ---
 
@@ -637,111 +705,70 @@ Run without tags — what deploys depends entirely on the inventory file. WEM an
 | `inventory.yml` | `ansible-playbook -i inventory.yml playbook.yml --tags cluster-data` | Snapshot cluster state only |
 | `inventory-with-standby.yml` | `ansible-playbook -i inventory-with-standby.yml playbook.yml --tags deploy` | WarehousePG cluster |
 
-All tags above work with any inventory that has `whpg_clusters` hosts defined — replace `-i` accordingly.
+All tags above work with any inventory that has `whpg_clusters` hosts defined - replace `-i` accordingly.
 
 ---
 
-##### Section 2: WEM + Observability stack
+##### Section 2: WEM + ClickHouse
 
-Use an inventory that has `wem_host` and/or `monitoring_host` set in `cluster_test/vars`.
+Use an inventory that has `wem_host` set in `cluster_test/vars` and a matching `wem_stack` group (and a `monitoring_stack` group for ClickHouse and the gateway collector).
 
 | Inventory | Command | What deploys |
 |---|---|---|
-| `inventory-with-standby-and-monitoring.yml` | `ansible-playbook -i inventory-with-standby-and-monitoring.yml playbook.yml --tags "wem,warehouse-pg-observability"` | WEM stack + observability stack |
-| `inventory-with-standby-and-monitoring.yml` | `ansible-playbook -i inventory-with-standby-and-monitoring.yml playbook.yml --tags wem` | PostgreSQL + Temporal + WEM dashboard |
-| `inventory-with-standby-and-monitoring.yml` | `ansible-playbook -i inventory-with-standby-and-monitoring.ymlplaybook.yml --tags warehouse-pg-observability` | Prometheus + Loki + Alertmanager |
-| `inventory-with-standby-and-monitoring.yml` | `ansible-playbook -i inventory-with-standby-and-monitoring.ymlplaybook.yml --tags warehouse-pg-wem-state-database` | PostgreSQL state DB only |
-| `inventory-with-standby-and-monitoring.yml` | `ansible-playbook -i inventory-with-standby-and-monitoring.ymlplaybook.yml --tags warehouse-pg-wem-workflow-manager` | Temporal only |
-| `inventory-with-standby-and-monitoring.yml` | `ansible-playbook -i inventory-with-standby-and-monitoring.ymlplaybook.yml --tags warehouse-pg-wem-dashboard` | WEM dashboard only |
+| `inventory-with-standby-and-monitoring.yml` | `ansible-playbook -i inventory-with-standby-and-monitoring.yml playbook.yml --tags "wem,warehouse-pg-clickhouse"` | WEM stack + ClickHouse |
+| `inventory-with-standby-and-monitoring.yml` | `ansible-playbook -i inventory-with-standby-and-monitoring.yml playbook.yml --tags wem` | PostgreSQL + WEM dashboard |
+| `inventory-with-standby-and-monitoring.yml` | `ansible-playbook -i inventory-with-standby-and-monitoring.yml playbook.yml --tags warehouse-pg-clickhouse` | ClickHouse only |
+| `inventory-with-standby-and-monitoring.yml` | `ansible-playbook -i inventory-with-standby-and-monitoring.yml playbook.yml --tags warehouse-pg-wem-state-database` | PostgreSQL state DB only |
+| `inventory-with-standby-and-monitoring.yml` | `ansible-playbook -i inventory-with-standby-and-monitoring.yml playbook.yml --tags warehouse-pg-wem-dashboard` | WEM dashboard only |
+| `inventory-with-monitoring.yml` | `ansible-playbook -i inventory-with-monitoring.yml playbook.yml --tags warehouse-pg-gateway-collector` | OTel gateway collector only (requires `gateway_collector_enabled: true` for `monitoring_host`) |
 
-The tags in the table above work with any inventory that has `wem_host`/`monitoring_host` set — replace `-i` accordingly.
+The tags in the table above work with any inventory that has `wem_host` and the `wem_stack` / `monitoring_stack` groups set - replace `-i` accordingly.
 
 ---
 
-##### Section 3: Observability collector and ACP host agent
+##### Section 3: ACP host agent
 
-These run on `whpg_clusters` hosts. The collector is only deployed when `monitoring_stack` group is non-empty; the ACP agent only when `wem_stack` is non-empty. Both conditions are satisfied automatically when `monitoring_host`/`wem_host` are set in inventory.
+Runs on all `whpg_clusters` hosts. The ACP agent is only deployed when `wem_stack` is non-empty.
 
 | Inventory | Command | What deploys |
 |---|---|---|
-| `inventory-with-standby-and-monitoring.yml` | `ansible-playbook -i inventory-with-standby-and-monitoring.yml playbook.yml --tags "warehouse-pg-observability-collector,acp-host-agent"` | Collector + ACP host agent on all cluster nodes |
-| `inventory-with-standby-and-monitoring.yml` | `ansible-playbook -i inventory-with-standby-and-monitoring.yml playbook.yml --tags warehouse-pg-observability-collector` | Observability collector only |
-| `inventory-with-standby-and-monitoring.yml` | `ansible-playbook -i inventory-with-standby-and-monitoring.yml  playbook.yml --tags acp-host-agent` | ACP host agent only on coordinator |
+| `inventory-with-standby-and-monitoring.yml` | `ansible-playbook -i inventory-with-standby-and-monitoring.yml playbook.yml --tags acp-host-agent` | ACP host agent on all cluster nodes |
 
 ---
 
 #### Upgrade
 
-**RPM-based components** (WEM, collector, ACP host agent, WarehousePG): set the upgrade variable to `always-upgrade-to-latest-minor` and re-run the relevant tag.
+**RPM-based components** (WEM, ClickHouse, ACP host agent, WarehousePG): set the upgrade variable to `always-upgrade-to-latest-minor` and re-run the relevant tag.
 
 | Component | Command |
 |---|---|
 | WarehousePG cluster | `ansible-playbook -i <inventory> playbook.yml -e whpg_upgrade=always-upgrade-to-latest-minor --tags deploy` |
 | WEM dashboard | `ansible-playbook -i <inventory> playbook.yml -e wem_upgrade=always-upgrade-to-latest-minor --tags warehouse-pg-wem-dashboard` |
-| Observability collector | `ansible-playbook -i <inventory> playbook.yml -e collector_upgrade=always-upgrade-to-latest-minor --tags warehouse-pg-observability-collector` |
+| ClickHouse | `ansible-playbook -i <inventory> playbook.yml -e clickhouse_upgrade=always-upgrade-to-latest-minor --tags warehouse-pg-clickhouse` |
 | ACP host agent | `ansible-playbook -i <inventory> playbook.yml -e acp_agent_upgrade=always-upgrade-to-latest-minor --tags acp-host-agent` |
+| Gateway collector | `ansible-playbook -i <inventory> playbook.yml -e otelcol_gateway_upgrade=always-upgrade-to-latest-minor --tags warehouse-pg-gateway-collector` |
 
-**Binary-based components** (Prometheus, Loki, Alertmanager, Temporal): set the version variable and re-run the relevant tag — the role reinstalls automatically when the version differs from what is installed.
-
-| Component | Variable | Command |
-|---|---|---|
-| Prometheus | `prometheus_version` | `ansible-playbook -i <inventory> playbook.yml -e prometheus_version=3.6.0 --tags warehouse-pg-observability` |
-| Loki | `loki_version` | `ansible-playbook -i <inventory> playbook.yml -e loki_version=3.6.0 --tags warehouse-pg-observability` |
-| Alertmanager | `alertmanager_version` | `ansible-playbook -i <inventory> playbook.yml -e alertmanager_version=0.34.0 --tags warehouse-pg-observability` |
-| Temporal | `temporal_version` | `ansible-playbook -i <inventory> playbook.yml -e temporal_version=1.32.0 --tags warehouse-pg-wem-workflow-manager` |
-
-To pin a specific RPM version for RPM-based components:
+To pin a specific RPM version, set the following variables in inventory or on the commandline:
 
 | Component | Variable | Example |
 |---|---|---|
 | WEM dashboard | `wem_version` | `-e wem_version=1.2.3` |
-| Observability collector | `obs_collector_version` | `-e obs_collector_version=1.2.3` |
+| ClickHouse | `clickhouse_version` | `-e clickhouse_version=24.3.1` |
 | ACP host agent | `acp_agent_version` | `-e acp_agent_version=1.2.3` |
-
----
-
-### Infrastructure provisioning (Terraform)
-
-The `Testing/` directory contains OpenTofu/Terraform configuration that provisions the underlying infrastructure on AWS:
-
-- **7 EC2 instances** (`m7a.large`, Rocky Linux 9) by default
-
-Terraform generates all five inventory files automatically on `apply`. To override the instance count, type, or jumphost username without editing `main.tf`, create `Testing/terraform.tfvars` and/or `Testing/override.tf`:
-
-```hcl
-# Testing/terraform.tfvars — variable overrides
-edb_jumphost_username = "your.name"
-```
-
-```hcl
-# Testing/override.tf — resource attribute overrides
-resource "aws_instance" "ec2_nodes" {
-  count         = 3
-  instance_type = "t3a.small"
-}
-```
-
-```bash
-cd Testing
-aws sso login --profile whpg
-tofu apply -auto-approve
-
-cd ../WarehousePG
-ansible-playbook -i inventory-with-monitoring.yml playbook.yml --tags "deploy,wem,warehouse-pg-observability,warehouse-pg-observability-collector,acp-host-agent"
-```
+| Gateway collector | `otelcol_gateway_version` | `-e otelcol_gateway_version=0.158.0` |
 
 ---
 
 ## Generated files
 
-The role will generate a number of files In the home directory of `WHPG_UNIX_USER`:
+The role will generate a number of files in the home directory of `WHPG_UNIX_USER`:
 
 ```
 ~/cluster_hostfile_all_<cluster_name>            # contains all hostnames
-~/cluster_hostfile_coordinator_<cluster_name>.   # contains the hostname of the coordinator
+~/cluster_hostfile_coordinator_<cluster_name>    # contains the hostname of the coordinator
 ~/cluster_hostfile_standby_<cluster_name>        # only if standby host is defined
 ~/cluster_hostfile_segments_<cluster_name>       # only if segment hosts are defined
-~/gpinitsystem_<cluster_name>                    # the gpinitsystem file used to initialize the cluster
+~/gpinitsystem_config_<cluster_name>             # the gpinitsystem file used to initialize the cluster
 ```
 
 ---
@@ -764,8 +791,8 @@ whpg_db_roles:
 
 | Key | Required | Default | Description |
 |---|---|---|---|
-| `name` | yes | — | Role name. |
-| `password` | no | — | Login password. Omit for passwordless roles. |
+| `name` | yes | - | Role name. |
+| `password` | no | - | Login password. Omit for passwordless roles. |
 | `superuser` | no | `false` | Grant `SUPERUSER` privilege. |
 | `createdb` | no | `false` | Grant `CREATEDB` privilege. |
 | `createrole` | no | `false` | Grant `CREATEROLE` privilege. |
@@ -773,7 +800,7 @@ whpg_db_roles:
 Run standalone (skips cluster deploy, SSH key exchange, etc.):
 
 ```bash
-ansible-playbook playbook.yml --tags roles
+ansible-playbook playbook.yml --tags whpgroles
 ```
 
 ---
@@ -840,7 +867,7 @@ The standby coordinator's lifecycle is driven by the inventory. Any host inside 
 | `hostX` | none | `gpinitstandby -s hostX -S <whpg_standby_data_directory>/<seg_prefix>-1 -a` |
 | none | `hostX` | `gpinitstandby -r -a` (remove) |
 | `hostX` | `hostX` | no-op |
-| `hostX` | `hostY` | fail — changing the standby hostname in place is not allowed |
+| `hostX` | `hostY` | fail - changing the standby hostname in place is not allowed |
 
 ### Data directory layout
 
@@ -859,9 +886,9 @@ Attempting both in a single inventory change (changing which host carries `whpg_
 
 WarehousePG supports two mutually exclusive workload managers, selected via the variable `whpg_resource_management`. Valid values:
 
-- `queue` — Resource Queues. Enforces concurrency, memory, and priority inside the database. No OS-level prep required.
-- `group` — Resource Groups, with **auto-detection** of cgroup v1 vs v2 based on what is mounted on the host.
-- `group-v2` — Resource Groups, **force cgroup v2**. Pre-flight rejects this on hosts that do not have `/sys/fs/cgroup/cgroup.controllers` (i.e. that aren't running cgroup v2 unified).
+- `queue` - Resource Queues. Enforces concurrency, memory, and priority inside the database. No OS-level prep required.
+- `group` - Resource Groups, with **auto-detection** of cgroup v1 vs v2 based on what is mounted on the host.
+- `group-v2` - Resource Groups, **force cgroup v2**. Pre-flight rejects this on hosts that do not have `/sys/fs/cgroup/cgroup.controllers` (i.e. that aren't running cgroup v2 unified).
 
 The value maps to the `gp_resource_manager` GUC. If the database currently runs under a different manager than the inventory specifies, the playbook switches it via `gpconfig` and restarts the cluster with `gpstop -r` before applying any group/queue definitions.
 
@@ -953,7 +980,7 @@ At the end of `07-initialize-database.yml`, on the coordinator host:
 1. Query the current `gp_resource_manager`. If it differs from `whpg_resource_management`, run `gpconfig` and `gpstop -r` to switch.
 2. Fetch the current resource groups (or queues) and their settings from the database.
 3. `CREATE` any entry that appears in inventory but not in the database.
-4. `ALTER` an existing entry only when at least one attribute differs from inventory — no statements are sent if everything already matches (keeps the audit log clean).
+4. `ALTER` an existing entry only when at least one attribute differs from inventory - no statements are sent if everything already matches (keeps the audit log clean).
 5. `DROP` any database entry not present in inventory, skipping the built-in defaults listed above.
 
 Leaving the relevant list (`whpg_resource_groups` or `whpg_resource_queues`) at its empty default is supported. No entries will be created or updated, but the cleanup step will still drop any custom (non-default) entries that exist in the database.
@@ -964,9 +991,9 @@ See `roles/warehouse-pg/defaults/main.yml` for fully commented examples.
 
 The `warehouse-pg` role can install optional WarehousePG extensions. Each extension has an associated `whpg_extension_<name>` variable that defaults to `false`. The variable accepts three kinds of values:
 
-- `true` — install the latest package matching `$whpg_major_version`. The package state honours `whpg_upgrade` (i.e. it is upgraded to the latest minor version when `whpg_upgrade` is `always-upgrade-to-latest-minor`, otherwise only installed if missing).
-- `false` — uninstall the extension package if it is currently installed.
-- a string — install the exact RPM identified by the string. The string is passed verbatim to `dnf` with `state: present`, so it may be a bare package name, an `name-version-release` (NVR), a full `name-version-release.arch` (NEVRA), or a path to a local `.rpm` file. The requested version is installed, upgraded, or downgraded as needed.
+- `true` - install the latest package matching `$whpg_major_version`. The package state honours `whpg_upgrade` (i.e. it is upgraded to the latest minor version when `whpg_upgrade` is `always-upgrade-to-latest-minor`, otherwise only installed if missing).
+- `false` - uninstall the extension package if it is currently installed.
+- a string - install the exact RPM identified by the string. The string is passed verbatim to `dnf` with `state: present`, so it may be a bare package name, a `name-version-release` (NVR), a full `name-version-release.arch` (NEVRA), or a path to a local `.rpm` file. The requested version is installed, upgraded, or downgraded as needed. Note that this Playbook does not handle upgrades or downgrades in the database itself, just the package installation.
 
 The role automatically selects the package matching `$whpg_major_version` for the `true`/`false` cases; extensions that are not available for the configured major version are skipped.
 
@@ -1035,7 +1062,7 @@ This section lists every non-internal variable referenced by the roles. Variable
 |---|---|---|
 | `cluster_name` | group | Cluster identifier used to build the inventory group name (`cluster_<cluster_name>`), hostfile names, and `gpinitsystem_config_<cluster_name>`. |
 | `whpg_cluster_name` | group | Cluster name identifier. Non-empty string; validated in pre-flight checks. |
-| `whpg_data_directory` | group/host | Base data directory path. Must exist as a directory on every host. |
+| `whpg_data_directory` | group/host | Base data directory path. Must exist as a directory on every host. The role default is an empty string, which is rejected. |
 | `whpg_role` | host | Role of each host within its cluster. One of `coordinator`, `standby`, `segment`. |
 | `hostname` | host | Expected system hostname for the host. Compared against `ansible_facts['hostname']`; set via `hostname` module. |
 | `ip_address` | host | IPv4/IPv6 address used to populate `/etc/hosts` entries for all cluster hosts. |
@@ -1050,53 +1077,110 @@ This section lists every non-internal variable referenced by the roles. Variable
 | `whpg_seg_prefix` | `"default"` | Segment prefix. Non-empty string. When equal to `"default"`, the template emits `gpseg`. |
 | `whpg_seg_num` | `2` | Number of primary segments per host. Integer, 1--64. |
 | `whpg_port` | `5432` | Coordinator listen port. Integer, 1024--65535. |
-| `whpg_seg_base_port` | `6000` | Base port for primary segments (written to `PORT_BASE` in `gpinitsystem` config). |
+| `whpg_seg_base_port` | `6000` | Base port for primary segments (written to `PORT_BASE` in `gpinitsystem` config). Integer, 1024--65535. |
 | `whpg_upgrade` | `"install-but-no-automatic-upgrades"` | Upgrade policy for warehouse-pg packages. The default `"install-but-no-automatic-upgrades"` is the safe setting: it installs the packages if missing but will not upgrade an already-installed version (maps to the `dnf` state `present`). `"always-upgrade-to-latest-minor"` auto-upgrades to the latest available minor version on every run (maps to the `dnf` state `latest`). |
 | `whpg_use_versioned_directories` | `true` | When `true`, data directories include a `v<major_version>/` subdirectory. |
-| `whpg_seg_enable_mirrors` | `true` | Enable mirror segments in the `gpinitsystem` configuration. |
+| `whpg_seg_enable_mirrors` | `false` | Enable mirror segments in the `gpinitsystem` configuration. |
 | `whpg_seg_mirror_base_port` | `7000` | Base port for mirror segments. |
 | `whpg_default_database` | `""` | Default database name. Must be a valid PostgreSQL identifier (1--63 chars, starts with letter or underscore) when non-empty. |
 | `whpg_install_packages` | `true` | Whether the role should install packages. When `false`, the user is expected to install them. |
-| `whpg_install_backup` | `false` | Set to `true` to install the `whpg-backup` package. |
+| `whpg_install_backup` | `true` | Install the `whpg-backup` package. Set to `false` to skip it. |
 | `whpg_resource_management` | `"group"` | Workload manager: `queue`, `group`, or `group-v2`. Maps to the `gp_resource_manager` GUC. See the "Workload management" section. |
 | `whpg_resource_groups` | `[]` | List of resource group definitions applied when `whpg_resource_management` is `group` or `group-v2`. Empty by default. |
 | `whpg_resource_queues` | `[]` | List of resource queue definitions applied when `whpg_resource_management` is `queue`. Empty by default. |
-| `DNF_TIMEOUT` | `120` | Maximum time (seconds) to wait for the RPM repository. |
+| `DNF_TIMEOUT` | `300` | Maximum time (seconds) to wait for the RPM repository. |
+| `serial_operations` | `1` | Throttle for concurrent package installs, to avoid hitting EDB repository retry limits. |
+| `whpg_user` | `"wem_user"` | WarehousePG database user WEM connects as. Used by the `pg_hba_monitoring_wem.conf` template (`11-update-pg-hba.yml`). |
 | `whpg_remove_old_gpAdminLogs` | `false` | Add maintenance jobs to remove old `gpAdminLogs` logfiles on coordinator/standby. |
 | `whpg_remove_old_logs` | `false` | Add maintenance job to remove old data-directory logfiles. |
 | `greenplum_path` | `"/usr/edb/whpg7/greenplum_path.sh"` | Path to the `greenplum_path.sh` environment script. |
+| `whpg_extension_<name>` | `false` | Install (`true`), remove (`false`) or install a specific RPM (string) for each extension. See the "Extensions" section for the list of names. |
+| `whpg_expand_db` | `true` | Automatically expand the database when segment hosts are added. Can take a long time. |
+| `whpg_expand_db_redistribute` | `true` | Automatically redistribute the data after expansion. Can take a long time. |
+| `whpg_expand_db_run_analyze` | `true` | Automatically run `ANALYZE` after expansion. Can take a long time. |
+| `whpg_expand_cleanup_after_complete` | `true` | Automatically clean up after expansion. Only use this if you are sure the expansion works. |
 
 #### Optional variables (no default; validated only when defined)
 
 | Variable | Description |
 |---|---|
-| `whpg_seg_base_port` | Base port for segments. Integer, 1024--65535. Validated only when defined and non-empty. |
 | `additional_pg_hba_conf` | List of additional `pg_hba.conf` entries to apply on the coordinator. See the "Customizing `pg_hba.conf`" section above for the entry schema. |
-| `whpg_db_roles` | List of database roles to create or update on the coordinator. See the "Database roles" section for the entry schema. Empty by default. |
+| `whpg_db_roles` | List of database roles to create or update on the coordinator. See the "Database users" section for the entry schema. Empty by default. |
+
+### Role: `warehouse-pg-cluster-data`
+
+| Variable | Default | Description |
+|---|---|---|
+| `WHPG_UNIX_USER` | `"gpadmin"` | Unix user whose home directory receives the `cluster_state_<cluster_name>.{txt,json}` files. Must match the value used by `warehouse-pg`. |
+| `WHPG_UNIX_GROUP` | `"gpadmin"` | Unix group of that user. |
+| `greenplum_path` | `"/usr/edb/whpg7/greenplum_path.sh"` | Path to `greenplum_path.sh`, sourced before running `psql`, `gpstate` and similar commands. |
 
 ### Role: `warehouse-pg-wem-dashboard`
 
 See [roles/warehouse-pg-wem-dashboard/README.md](roles/warehouse-pg-wem-dashboard/README.md) for the full variable reference.
 
-### Role: `warehouse-pg-wem-workflow-manager`
+### Role: `warehouse-pg-wem-state-database`
 
-See [roles/warehouse-pg-wem-workflow-manager/README.md](roles/warehouse-pg-wem-workflow-manager/README.md) for the full variable reference.
+See [roles/warehouse-pg-wem-state-database/README.md](roles/warehouse-pg-wem-state-database/README.md) for the full variable reference.
+
+### Role: `warehouse-pg-clickhouse`
+
+| Variable | Default | Description |
+|---|---|---|
+| `clickhouse_server_package` | `"edb-clickhouse-server"` | Server package name. |
+| `clickhouse_client_package` | `"edb-clickhouse-client"` | Client package name. |
+| `clickhouse_version` | `""` | Pin a specific version (e.g. `24.3.1`). Empty installs whatever the EDB repository provides. |
+| `clickhouse_upgrade` | `"install-but-no-automatic-upgrades"` | Install/upgrade/remove policy: `install-but-no-automatic-upgrades`, `always-upgrade-to-latest-minor` or `absent`. |
+| `clickhouse_listen_hosts` | `["127.0.0.1", "<ip_address>"]` | Addresses ClickHouse binds to. |
+| `clickhouse_http_port` | `8123` | HTTP port. |
+| `clickhouse_tcp_port` | `9000` | Native protocol port. |
+| `clickhouse_log_level` | `"information"` | Server log level. |
+| `clickhouse_log_dir` | `"/var/log/clickhouse-server"` | Log directory. |
+| `clickhouse_log_file` | `"<clickhouse_log_dir>/clickhouse-server.log"` | Main log file. |
+| `clickhouse_error_log_file` | `"<clickhouse_log_dir>/clickhouse-server.err.log"` | Error log file. |
+| `clickhouse_user` | _(none - required)_ | ClickHouse user to create. Must not be `default`. Set in inventory. |
+| `clickhouse_password` | _(none - required)_ | Password for `clickhouse_user`. Set in inventory. |
+| `clickhouse_password_min_length` | `11` | Minimum length enforced for `clickhouse_password`. |
+| `clickhouse_service_name` | `"clickhouse-server"` | systemd service name. |
+| `clickhouse_service_started` | `true` | Whether the role starts the service. |
+| `DNF_TIMEOUT` | `120` | Maximum time (seconds) to wait for the RPM repository. |
+
+### Role: `warehouse-pg-gateway-collector`
+
+| Variable | Default | Description |
+|---|---|---|
+| `gateway_collector_enabled` | `false` | Install and configure the gateway collector. Set on the `monitoring_host` entry or in the cluster vars. |
+| `otelcol_gateway_package` | `"edb-otelcol"` | Package name. |
+| `otelcol_gateway_version` | `""` | Pin a specific version (e.g. `0.158.0`). Empty installs whatever the EDB repository provides. |
+| `otelcol_gateway_upgrade` | `"install-but-no-automatic-upgrades"` | Install/upgrade/remove policy: `install-but-no-automatic-upgrades`, `always-upgrade-to-latest-minor` or `absent`. |
+| `otelcol_gateway_grpc_endpoint` | `"0.0.0.0:4317"` | OTLP gRPC receiver endpoint. |
+| `otelcol_gateway_http_endpoint` | `"0.0.0.0:4318"` | OTLP HTTP receiver endpoint. |
+| `otelcol_clickhouse_endpoint` | _(derived)_ | ClickHouse DSN, built from `clickhouse_user`, `clickhouse_password`, `clickhouse_host` (default `127.0.0.1`) and `clickhouse_tcp_port`. Override only when ClickHouse runs on a different host than the gateway. |
+| `otelcol_clickhouse_database` | `"acp_observability"` | ClickHouse database the telemetry is written to. |
+| `otelcol_clickhouse_timeout` | `"5s"` | ClickHouse exporter timeout. |
+| `otelcol_prometheus_endpoint` | `"127.0.0.1:8889"` | Address of the Prometheus scrape endpoint (`/metrics`). |
+| `otelcol_batch_timeout` | `"5s"` | Batch processor timeout. |
+| `otelcol_batch_send_size` | `8192` | Batch processor send size. |
+| `otelcol_gateway_config_file` | `"/etc/edb/otelcol/config.yaml"` | Collector configuration file. |
+| `otelcol_gateway_service_name` | `"edb-otelcol"` | systemd service name. |
+| `otelcol_gateway_service_started` | `true` | Whether the role starts the service. |
+| `DNF_TIMEOUT` | `120` | Maximum time (seconds) to wait for the RPM repository. |
 
 ### Role: `acp-host-agent`
 
 See [roles/acp-host-agent/README.md](roles/acp-host-agent/README.md) for the full variable reference.
 
-#### Running upgrades
+### Running upgrades
 
-The `whpg_upgrade` variable defaults to `install-but-no-automatic-upgrades`, which is a safe choice. The playbook can run again, without package changes applied and potentially forcing database restarts.
+The `whpg_upgrade` variable defaults to `install-but-no-automatic-upgrades`. This is the safe setting: the playbook can be re-run at any time without upgrading installed packages, so it does not cause package changes or the database restarts that may come with them.
 
-This variable can be overridden on the command line. Example:
+To upgrade, override the variable for a single run on the command line. Example:
 
 ```
 ansible-playbook playbook.yml -e "whpg_upgrade=always-upgrade-to-latest-minor"
 ```
 
-This will apply the new setting only for this run of the playbook, making it safe to apply potential updates when convenient.
+The new setting applies only to this run of the playbook, so updates can be applied when convenient.
 
 ## Performance
 
@@ -1123,9 +1207,9 @@ The `forks` parameter is set to `10` (default: `10`), ssh options used:
 ssh_args = -o ControlMaster=auto -o ControlPersist=10s -o StrictHostKeyChecking=no
 ```
 
-All test did only run once. All tests ran on the code version 2026-05-21, deploying the EDB repository (role `edb-repository`), deploying the cluster (role `warehouse-pg`), creating cluster stats (role `warehouse-pg-cluster-data`), no expansions configured, no WEM (role `warehouse-pg-enterprise-manager`).
+All tests ran only once. All tests ran on the code version 2026-05-21, deploying the EDB repository (role `edb-repository`), deploying the cluster (role `warehouse-pg`), creating cluster stats (role `warehouse-pg-cluster-data`), no expansions configured, no WEM (role `warehouse-pg-wem-dashboard`).
 
-Note: runtine for tests are not linear, several factors can affect the runtime:
+Note: runtimes for tests are not linear, several factors can affect the runtime:
 
 - network roundtrip time
 - general ssh delays and retries
@@ -1135,16 +1219,25 @@ Note: runtine for tests are not linear, several factors can affect the runtime:
 
 #### m7a.medium
 
-| Segment Hosts | Segments | Run 1 | Run 2 |
-|:---:|:---:|---:|---:|
-| 2  | 2 |  8m0s |  4m56s |
-| 2  | 4 | 8m3s |  5m 55s |
-| 4  | 2 |  9m 58s |  5m 57s |
-| 4  | 4 | 10m 29s |  5m 55s |
-| 10 | 2 | 17m 51s | 10m 27s |
-| 10 | 4 | 19m 26s | 10m 19s |
-| 20 | 2 | 28m 53s | 15m  0s |
-| 20 | 4 | 30m 44s | 15m  5s |
+- 2 segment hosts, 2 segments, 1st run: `8m0s`
+- 2 segment hosts, 2 segments, 2nd run: `4m56s`
+- 2 segment hosts, 4 segments, 1st run: `8m3s`
+- 2 segment hosts, 4 segments, 2nd run: `5m7s`
+
+- 4 segment hosts, 2 segments, 1st run: `9m58s`
+- 4 segment hosts, 2 segments, 2nd run: `5m57s`
+- 4 segment hosts, 4 segments, 1st run: `10m29s`
+- 4 segment hosts, 4 segments, 2nd run: `5m55s`
+
+- 10 segment hosts, 2 segments, 1st run: `17m51s`
+- 10 segment hosts, 2 segments, 2nd run: `10m27s`
+- 10 segment hosts, 4 segments, 1st run: `19m26s`
+- 10 segment hosts, 4 segments, 2nd run: `10m19s`
+
+- 20 segment hosts, 2 segments, 1st run: `28m53s`
+- 20 segment hosts, 2 segments, 2nd run: `15m0s`
+- 20 segment hosts, 4 segments, 1st run: `30m44s`
+- 20 segment hosts, 4 segments, 2nd run: `15m5s`
 
 4 GB RAM is not enough for the `coordinator` to manage 40 segments, operation times out.
 
@@ -1152,60 +1245,103 @@ In general, `m7a.medium` instances are too small to run 2 WarehousePG instances.
 
 #### m7a.large
 
-| Segment Hosts | Segments | Run 1 | Run 2 |
-|:---:|:---:|---:|---:|
-|  2 | 2 |  7m 48s |  5m  0s |
-|  2 | 4 |  7m 49s |  5m  2s |
-|  4 | 2 |  9m 48s |  5m 48s |
-|  4 | 4 |  9m 17s |  5m 56s |
-| 10 | 2 | 16m 48s |  9m 30s |
-| 10 | 4 | 17m 21s |  9m 27s |
-| 20 | 2 | 31m 23s | 15m  8s |
-| 20 | 4 | 30m 54s | 15m 34s |
-| 40 | 2 | 56m 45s | 27m 31s |
-| 40 | 4 | 50m 40s | 21m 13s |
+- 2 segment hosts, 2 segments, 1st run: `7m48s`
+- 2 segment hosts, 2 segments, 2nd run: `5m0s`
+- 2 segment hosts, 4 segments, 1st run: `7m49s`
+- 2 segment hosts, 4 segments, 2nd run: `5m2s`
+
+- 4 segment hosts, 2 segments, 1st run: `9m48s`
+- 4 segment hosts, 2 segments, 2nd run: `5m48s`
+- 4 segment hosts, 4 segments, 1st run: `9m17s`
+- 4 segment hosts, 4 segments, 2nd run: `5m56s`
+
+- 10 segment hosts, 2 segments, 1st run: `16m48s`
+- 10 segment hosts, 2 segments, 2nd run: `9m30s`
+- 10 segment hosts, 4 segments, 1st run: `17m21s`
+- 10 segment hosts, 4 segments, 2nd run: `9m27s`
+
+- 20 segment hosts, 2 segments, 1st run: `31m23s`
+- 20 segment hosts, 2 segments, 2nd run: `15m8s`
+- 20 segment hosts, 4 segments, 1st run: `30m54s`
+- 20 segment hosts, 4 segments, 2nd run: `15m34s`
+
+- 40 segment hosts, 2 segments, 1st run: `56m45s`
+- 40 segment hosts, 2 segments, 2nd run: `27m31s`
+- 40 segment hosts, 4 segments, 1st run: `50m40s`
+- 40 segment hosts, 4 segments, 2nd run: `21m13s`
 
 #### m7a.xlarge
 
-| Segment Hosts | Segments | Run 1 | Run 2 |
-|:---:|:---:|---:|---:|
-|  2 | 2 |  7m 12s |  4m 26s |
-|  2 | 4 |  7m 28s |  4m 30s |
-|  4 | 2 |  8m 10s |  4m 56s |
-|  4 | 4 |  8m 50s |  4m 58s |
-| 10 | 2 | 15m  3s |  7m 56s |
-| 10 | 4 | 16m 35s |  7m 58s |
-| 20 | 2 | 26m 40s | 12m 13s |
-| 20 | 4 | 27m 36s | 13m  0s |
-| 40 | 2 | 50m 52s | 24m 22s |
-| 40 | 4 | 52m  8s | 21m 20s |
+- 2 segment hosts, 2 segments, 1st run: `7m12s`
+- 2 segment hosts, 2 segments, 2nd run: `4m26s`
+- 2 segment hosts, 4 segments, 1st run: `7m28s`
+- 2 segment hosts, 4 segments, 2nd run: `4m30s`
+
+- 4 segment hosts, 2 segments, 1st run: `8m10s`
+- 4 segment hosts, 2 segments, 2nd run: `4m56s`
+- 4 segment hosts, 4 segments, 1st run: `8m50s`
+- 4 segment hosts, 4 segments, 2nd run: `4m58s`
+
+- 10 segment hosts, 2 segments, 1st run: `15m3s`
+- 10 segment hosts, 2 segments, 2nd run: `7m56s`
+- 10 segment hosts, 4 segments, 1st run: `16m35s`
+- 10 segment hosts, 4 segments, 2nd run: `7m58s`
+
+- 20 segment hosts, 2 segments, 1st run: `26m40s`
+- 20 segment hosts, 2 segments, 2nd run: `12m13s`
+- 20 segment hosts, 4 segments, 1st run: `27m36s`
+- 20 segment hosts, 4 segments, 2nd run: `13m0s`
+
+- 40 segment hosts, 2 segments, 1st run: `50m52s`
+- 40 segment hosts, 2 segments, 2nd run: `24m22s`
+- 40 segment hosts, 4 segments, 1st run: `52m8s`
+- 40 segment hosts, 4 segments, 2nd run: `21m20s`
 
 #### m7a.2xlarge
 
-| Segment Hosts | Segments | Run 1 | Run 2 |
-|:---:|:---:|---:|---:|
-|  2 | 2 |  7m  3s |  4m 52s |
-|  2 | 4 |  7m 48s |  4m 32s |
-|  4 | 2 |  8m 32s |  5m  1s |
-|  4 | 4 |  8m 39s |  4m 59s |
-| 10 | 2 | 15m 17s |  8m 16s |
-| 10 | 4 | 16m 27s |  8m  5s |
-| 10 | 6 | 17m 38s |  8m  7s |
-| 10 | 8 | 17m 10s |  8m  6s |
-| 20 | 2 | 27m 21s | 12m 23s |
-| 20 | 4 | 31m 50s | 16m 46s |
-| 20 | 6 | 29m 34s | 13m 12s |
-| 20 | 8 | 34m  2s | 15m 46s |
-| 40 | 2 | 62m 13s | 34m 21s |
-| 40 | 4 | 66m 42s | 38m 54s |
-| 40 | 6 | 65m 25s | 36m 48s |
-| 40 | 8 | 68m 53s | 33m 59s |
+- 2 segment hosts, 2 segments, 1st run: `7m3s`
+- 2 segment hosts, 2 segments, 2nd run: `4m52s`
+- 2 segment hosts, 4 segments, 1st run: `7m48s`
+- 2 segment hosts, 4 segments, 2nd run: `4m32s`
+
+- 4 segment hosts, 2 segments, 1st run: `8m32s`
+- 4 segment hosts, 2 segments, 2nd run: `5m1s`
+- 4 segment hosts, 4 segments, 1st run: `8m39s`
+- 4 segment hosts, 4 segments, 2nd run: `4m59s`
+
+- 10 segment hosts, 2 segments, 1st run: `15m17s`
+- 10 segment hosts, 2 segments, 2nd run: `8m16s`
+- 10 segment hosts, 4 segments, 1st run: `16m27s`
+- 10 segment hosts, 4 segments, 2nd run: `8m5s`
+- 10 segment hosts, 6 segments, 1st run: `17m38s`
+- 10 segment hosts, 6 segments, 2nd run: `8m7s`
+- 10 segment hosts, 8 segments, 1st run: `17m10s`
+- 10 segment hosts, 8 segments, 2nd run: `8m6s`
+
+- 20 segment hosts, 2 segments, 1st run: `27m21s`
+- 20 segment hosts, 2 segments, 2nd run: `12m23s`
+- 20 segment hosts, 4 segments, 1st run: `31m50s`
+- 20 segment hosts, 4 segments, 2nd run: `16m46s`
+- 20 segment hosts, 6 segments, 1st run: `29m34s`
+- 20 segment hosts, 6 segments, 2nd run: `13m12s`
+- 20 segment hosts, 8 segments, 1st run: `34m2s`
+- 20 segment hosts, 8 segments, 2nd run: `15m46s`
+
+- 40 segment hosts, 2 segments, 1st run: `62m13s`
+- 40 segment hosts, 2 segments, 2nd run: `34m21s`
+- 40 segment hosts, 4 segments, 1st run: `66m42s`
+- 40 segment hosts, 4 segments, 2nd run: `38m54s`
+- 40 segment hosts, 6 segments, 1st run: `65m25s`
+- 40 segment hosts, 6 segments, 2nd run: `36m48s`
+- 40 segment hosts, 8 segments, 1st run: `68m53s`
+- 40 segment hosts, 8 segments, 2nd run: `33m59s`
 
 ##### Increase forks parameter
 
 The following tests were run with an increased `forks` parameter, allowing for more parallel operations on the Ansible controller host (Apple M1 Max) while consuming more resources on the controller.
 
-| Segment Hosts | Segments | Forks | Parallelism | Run 1 | Run 2 |
-|:---:|:---:|:---:|---|---:|---:|
-|40  |8| 21 | 20 segments + coordinator in parallel | 71m 22s | 37m 33s |
-|40  |8| 41 | 40 segments + coordinator in parallel | 72m 40s | 31m 11s |
+- 40 segment hosts, 8 segments, forks=21 (running 20 segments in parallel, plus coordinator), 1st run: `71m22s`
+- 40 segment hosts, 8 segments, forks=21 (running 20 segments in parallel, plus coordinator), 2nd run: `37m33s`
+
+- 40 segment hosts, 8 segments, forks=41 (running 40 segments in parallel, plus coordinator), 1st run: `72m40s`
+- 40 segment hosts, 8 segments, forks=41 (running 40 segments in parallel, plus coordinator), 2nd run: `31m11s`

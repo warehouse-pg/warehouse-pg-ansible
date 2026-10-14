@@ -6,9 +6,28 @@
       - ansible_facts["os_family"] == "RedHat"
     fail_msg: "This role only supports Red Hat based operating systems."
 
-# Pre-flight always runs — it validates wem_upgrade and computes the
-# _wem_dnf_state fact that install.yml uses on every code path. The DB
-# connection assertions inside pre-flight self-gate on wem_upgrade.
+- name: Ensure acl is installed for unprivileged become
+  ansible.builtin.import_tasks: 00-acl.yml
+
+- name: Resolve coordinator
+  ansible.builtin.import_tasks: 00-pre.yml
+  tags: always
+
+- name: Resolve WEM hosts and IP addresses
+  ansible.builtin.import_tasks: 00-resolve-hosts.yml
+  tags: always
+
+- name: Create the WEM database role and pg_hba entries
+  ansible.builtin.import_tasks: 00-db-role.yml
+  # Must stay in sync with the valid install values asserted in 01-pre-flight.yml
+  when: wem_upgrade in ['install-but-no-automatic-upgrades', 'always-upgrade-to-latest-minor']
+  tags: [wem, warehouse-pg-db-roles, update-pg-hba]
+
+# The DB role setup (00-db-role.yml, including the whpg_user / whpg_password
+# asserts) runs before pre-flight and is gated on the two install values of
+# wem_upgrade. Pre-flight always runs - it validates wem_upgrade and computes the
+# _wem_dnf_state fact that install.yml uses on every code path. The remaining
+# DB connection assertions inside pre-flight self-gate on wem_upgrade.
 #
 # When wem_upgrade == 'absent', install.yml removes the RPM (which
 # also stops/disables the service via the RPM's %preun scriptlet) and we

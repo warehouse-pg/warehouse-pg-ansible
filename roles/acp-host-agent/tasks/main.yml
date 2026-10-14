@@ -1,17 +1,20 @@
 ---
 
-- name: Check for Red Hat based OS
-  ansible.builtin.assert:
-    that:
-      - ansible_facts["os_family"] == "RedHat"
-    fail_msg: "This role only supports Red Hat based operating systems."
+# The acp-host-agent connects to WEM and runs WHPG activity handlers.
+# Installed on all cluster nodes (coordinator, standby, and segments).
+# Nodes self-register to WEM on first start.
+# Skipped entirely when the inventory has no wem_stack group (no WEM to connect to).
+- name: Deploy acp-host-agent
+  when: groups['wem_stack'] | default([]) | length > 0
+  block:
+    - name: Ensure acl is installed for unprivileged become
+      ansible.builtin.import_tasks: 00-acl.yml
 
-# The acp-host-agent connects to Temporal and runs WHPG activity handlers,
-# so it is only installed on coordinator nodes.
-- name: Install acp-host-agent package
-  ansible.builtin.import_tasks: install.yml
-  when: whpg_role == "coordinator"
+    - name: Run pre-flight checks
+      ansible.builtin.import_tasks: 01-pre-flight.yml
 
-- name: Configure acp-host-agent
-  ansible.builtin.import_tasks: configure.yml
-  when: whpg_role == "coordinator"
+    - name: Install acp-host-agent package
+      ansible.builtin.import_tasks: 02-install.yml
+
+    - name: Configure acp-host-agent
+      ansible.builtin.import_tasks: 03-configure.yml

@@ -1,0 +1,61 @@
+---
+
+# Write the full gateway collector config. The RPM ships a default config.yaml
+# which we overwrite entirely — the gateway config is fully managed by Ansible.
+# The RPM creates the config directory; ownership and mode below match what it
+# ships (edb-otelcol:edb-otelcol 0640) since the file embeds the ClickHouse
+# password.
+
+- name: Write gateway collector config.yaml
+  ansible.builtin.copy:
+    dest: "{{ otelcol_gateway_config_file }}"
+    owner: edb-otelcol
+    group: edb-otelcol
+    mode: "0640"
+    content: |
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: "{{ otelcol_gateway_grpc_endpoint }}"
+            http:
+              endpoint: "{{ otelcol_gateway_http_endpoint }}"
+
+      exporters:
+        clickhouse:
+          endpoint: "{{ otelcol_clickhouse_endpoint }}"
+          database: {{ otelcol_clickhouse_database }}
+          timeout: {{ otelcol_clickhouse_timeout }}
+          retry_on_failure:
+            enabled: true
+            initial_interval: 5s
+            max_interval: 30s
+            max_elapsed_time: 300s
+
+        prometheus:
+          endpoint: "{{ otelcol_prometheus_endpoint }}"
+          namespace: "whpg"
+          send_timestamps: true
+          metric_expiration: 180s
+          resource_to_telemetry_conversion:
+            enabled: true
+
+      processors:
+        batch:
+          timeout: {{ otelcol_batch_timeout }}
+          send_batch_size: {{ otelcol_batch_send_size }}
+
+      service:
+        pipelines:
+          metrics:
+            receivers: [otlp]
+            processors: [batch]
+            exporters: [clickhouse, prometheus]
+          logs:
+            receivers: [otlp]
+            processors: [batch]
+            exporters: [clickhouse]
+  become: true
+  become_user: root
+  no_log: true
+  notify: Restart edb-otelcol

@@ -1,0 +1,19 @@
+---
+
+- name: Run pre-flight checks
+  ansible.builtin.import_tasks: 01-pre-flight.yml
+
+- name: Install ClickHouse packages
+  ansible.builtin.import_tasks: 02-install.yml
+
+- name: Configure ClickHouse
+  ansible.builtin.import_tasks: 03-configure.yml
+  when: clickhouse_upgrade != 'absent'
+
+- name: Create ClickHouse user and restrict default user to loopback
+  ansible.builtin.import_tasks: 04-set-password.yml
+  when: clickhouse_upgrade != 'absent'
+
+- name: Manage ClickHouse service
+  ansible.builtin.import_tasks: 05-service.yml
+  when: clickhouse_upgrade != 'absent'

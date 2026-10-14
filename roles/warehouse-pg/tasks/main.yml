@@ -1,5 +1,8 @@
 ---
 
+- name: Ensure acl is installed for unprivileged become
+  ansible.builtin.import_tasks: 00-acl.yml
+
 - name: Run pre-flight checks
   ansible.builtin.import_tasks: 01-pre-flight-checks.yml
 
@@ -27,6 +30,7 @@
 
 - name: Manage WarehousePG database roles
   ansible.builtin.import_tasks: 10-roles.yml
+  tags: whpgroles
 
 - name: Expand WarehousePG
   ansible.builtin.import_tasks: 09-expand-cluster.yml

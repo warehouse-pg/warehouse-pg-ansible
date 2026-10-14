@@ -1,0 +1,18 @@
+---
+
+# Identifies which host in the whpg_clusters group is the coordinator; used
+# below (and in 00-resolve-hosts.yml) to read its hostvars.
+- name: Resolve coordinator
+  ansible.builtin.set_fact:
+    _wem_prep_coordinator: "{{ groups['whpg_clusters'] | map('extract', hostvars) | selectattr('whpg_role', 'equalto', 'coordinator') | map(attribute='inventory_hostname') | first }}"
+  tags: always
+
+- name: Assert coordinator was found
+  ansible.builtin.assert:
+    that:
+      - _wem_prep_coordinator is defined
+      - _wem_prep_coordinator | length > 0
+    fail_msg: >-
+      No host in the 'whpg_clusters' group has whpg_role == 'coordinator'.
+      WEM needs a coordinator to monitor; check your inventory.
+  tags: always

@@ -27,22 +27,32 @@
 - name: Configure non-default PostgreSQL port
   when: pg_port | int != 5432
   block:
-    - name: Install policycoreutils-python-utils for SELinux port management
-      ansible.builtin.dnf:
-        name: policycoreutils-python-utils
-        state: present
-
-    - name: Check if port {{ pg_port }} is already registered in SELinux
+    - name: Check if SELinux is enforcing or permissive
       ansible.builtin.command:
-        cmd: semanage port -l
-      register: _semanage_list
+        cmd: getenforce
+      register: _getenforce
       changed_when: false
+      failed_when: false
 
-    - name: Allow PostgreSQL to bind to port {{ pg_port }} via SELinux
-      ansible.builtin.command:
-        cmd: semanage port -a -t postgresql_port_t -p tcp {{ pg_port }}
-      when: "'postgresql_port_t' not in _semanage_list.stdout or pg_port | string not in _semanage_list.stdout"
-      changed_when: true
+    - name: Configure SELinux for non-default PostgreSQL port
+      when: _getenforce.stdout | default('Disabled') in ['Enforcing', 'Permissive']
+      block:
+        - name: Install policycoreutils-python-utils for SELinux port management
+          ansible.builtin.dnf:
+            name: policycoreutils-python-utils
+            state: present
+
+        - name: Check if port {{ pg_port }} is already registered in SELinux
+          ansible.builtin.command:
+            cmd: semanage port -l
+          register: _semanage_list
+          changed_when: false
+
+        - name: Allow PostgreSQL to bind to port {{ pg_port }} via SELinux
+          ansible.builtin.command:
+            cmd: semanage port -a -t postgresql_port_t -p tcp {{ pg_port }}
+          when: "'postgresql_port_t' not in _semanage_list.stdout or pg_port | string not in _semanage_list.stdout"
+          changed_when: true
 
     - name: Set PostgreSQL port in postgresql.conf
       ansible.builtin.lineinfile:

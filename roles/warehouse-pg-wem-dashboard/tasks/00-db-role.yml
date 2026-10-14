@@ -1,0 +1,45 @@
+---
+
+# Creates the database role WEM connects as, plus its pg_hba entries, on the
+# coordinator. Runs before pre-flight because pre-flight tests the DB
+# connection. Only the WEM role is managed here: other roles stay with the
+# warehouse-pg play (whpg_db_roles in inventory).
+
+- name: Assert WHPG connection user is set
+  ansible.builtin.assert:
+    that:
+      - whpg_user | length > 0
+    fail_msg: >-
+      whpg_user is empty. Set the database user WEM connects to
+      the WarehousePG cluster as.
+  tags: [wem, warehouse-pg-db-roles, update-pg-hba]
+
+- name: Assert WHPG connection password is set
+  ansible.builtin.assert:
+    that:
+      - whpg_password is defined
+      - whpg_password | string | length > 0
+    fail_msg: "whpg_password is empty. Set the password for whpg_user in the inventory."
+  tags: [wem, warehouse-pg-db-roles, update-pg-hba]
+
+- name: Update WHPG db for whpg user used by WEM
+  block:
+    - name: Create database role for WEM dashboard
+      ansible.builtin.include_role:
+        name: warehouse-pg
+        tasks_from: 10-roles.yml
+      vars:
+        whpg_db_roles:
+          - name: "{{ whpg_user }}"
+            password: "{{ whpg_password }}"
+            superuser: true
+
+    - name: Update pg_hba.conf for whpg_user used by WEM dashboard
+      ansible.builtin.include_role:
+        name: warehouse-pg
+        tasks_from: 11-update-pg-hba.yml
+  vars:
+    whpg_role: coordinator
+    cluster_name: "{{ hostvars[_wem_prep_coordinator]['cluster_name'] }}"
+  delegate_to: "{{ _wem_prep_coordinator }}"
+  tags: [wem, warehouse-pg-db-roles, update-pg-hba]

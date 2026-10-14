@@ -38,9 +38,9 @@ whpg_install_backup: true
 # unified hierarchy mounted), or 'queue' (Resource Queues, legacy).
 # Maps to the gp_resource_manager GUC; 'group' is translated to 'group-v2' at
 # runtime when the OS only has cgroup v2.
-whpg_resource_management: "group-v2"
+whpg_resource_management: "group"
 
-# Resource Groups to create when whpg_resource_management == 'group'.
+# Resource Groups to create when whpg_resource_management is 'group' or 'group-v2'.
 # A list of hashes; each entry needs a 'name'.
 # Defaults / valid ranges (Greenplum 7):
 #   CONCURRENCY      default 20    (0-1000)
@@ -109,7 +109,7 @@ whpg_remove_old_gpAdminLogs: false
 whpg_remove_old_logs: false
 
 # define path for "greenplum_path.sh" file, for easier migration later on
-greenplum_path: "/usr/local/greenplum-db/greenplum_path.sh"
+greenplum_path: "/usr/edb/whpg7/greenplum_path.sh"
 
 # Extensions: set to true to install the corresponding extension package,
 # false to uninstall it, or to a string (NVR / NEVRA / path to .rpm) to

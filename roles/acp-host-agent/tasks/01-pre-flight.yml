@@ -1,0 +1,44 @@
+---
+
+- name: Check for Red Hat based OS
+  ansible.builtin.assert:
+    that:
+      - ansible_facts["os_family"] == "RedHat"
+    fail_msg: "This role only supports Red Hat based operating systems."
+
+- name: Assert acp_agent_upgrade is a valid value
+  ansible.builtin.assert:
+    that:
+      - acp_agent_upgrade is defined
+      - acp_agent_upgrade is string
+      - acp_agent_upgrade in ['install-but-no-automatic-upgrades', 'always-upgrade-to-latest-minor', 'absent']
+    fail_msg: >-
+      acp_agent_upgrade must be 'install-but-no-automatic-upgrades',
+      'always-upgrade-to-latest-minor', or 'absent'
+      (got '{{ acp_agent_upgrade | default('undefined') }}').
+  run_once: true
+
+- name: Assert WEM connect address is set
+  ansible.builtin.assert:
+    that:
+      - wem_connect_address | length > 0
+    fail_msg: >-
+      wem_connect_address is empty. Set wem_host in inventory
+      or pass -e wem_connect_address=<host>:<port+1>.
+  when: acp_agent_upgrade != 'absent'
+  run_once: true
+
+- name: Assert greenplum_path exists
+  ansible.builtin.stat:
+    path: "{{ greenplum_path }}"
+  register: _gp_path
+  when: acp_agent_upgrade != 'absent'
+
+- name: Fail if greenplum_path does not exist
+  ansible.builtin.assert:
+    that:
+      - _gp_path.stat.exists
+    fail_msg: >-
+      greenplum_path '{{ greenplum_path }}' does not exist.
+      Ensure WarehousePG is installed before deploying acp-host-agent.
+  when: acp_agent_upgrade != 'absent'

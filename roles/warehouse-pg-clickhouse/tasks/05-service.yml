@@ -1,0 +1,51 @@
+---
+
+# `clickhouse start` registers and starts the systemd unit in one step.
+- name: Start/stop clickhouse-server via clickhouse CLI
+  become: true
+  become_user: root
+  block:
+    - name: Start clickhouse-server
+      ansible.builtin.command:
+        cmd: "clickhouse start"
+      register: _ch_start
+      # rc=2 means already running — treat as success
+      failed_when: _ch_start.rc not in [0, 2]
+      changed_when: _ch_start.rc == 0
+      when: clickhouse_service_started | bool
+
+    - name: Stop clickhouse-server
+      ansible.builtin.command:
+        cmd: "clickhouse stop"
+      changed_when: true
+      when: not (clickhouse_service_started | bool)
+
+  rescue:
+    - name: Collect clickhouse-server status
+      ansible.builtin.command:
+        cmd: "clickhouse status"
+      register: _ch_status
+      changed_when: false
+      failed_when: false
+
+    - name: Collect clickhouse-server journal logs
+      ansible.builtin.command:
+        cmd: "journalctl -xeu {{ clickhouse_service_name }} -n 100 --no-pager"
+      register: _ch_journal
+      changed_when: false
+      failed_when: false
+
+    - name: Print clickhouse-server status
+      ansible.builtin.debug:
+        msg: "{{ _ch_status.stdout_lines }}"
+
+    - name: Print clickhouse-server journal logs
+      ansible.builtin.debug:
+        msg: "{{ _ch_journal.stdout_lines }}"
+
+    - name: Fail with diagnostic hint
+      ansible.builtin.fail:
+        msg: >-
+          clickhouse-server failed to start. Check status and logs printed above.
+          Common causes: port {{ clickhouse_tcp_port }} or {{ clickhouse_http_port }}
+          already in use, or malformed config.xml.

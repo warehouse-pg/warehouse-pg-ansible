@@ -1,6 +1,6 @@
 # warehouse-pg-wem-state-database
 
-Installs PostgreSQL 15 on the `wem_stack` host via the DNF AppStream module. After installation, the role creates the WEM state database and user, the Temporal persistence databases and user, and configures `pg_hba.conf` to allow all users to connect from the local loopback address via trust auth.
+Installs PostgreSQL 15 on the `wem_stack` host via the DNF AppStream module. After installation, the role creates the WEM state database and user, and configures `pg_hba.conf` so host connections use password authentication. Loopback (`127.0.0.1`, `::1`) follows `wem_state_db_local_trust`.
 
 Runs on port `5433` by default to avoid conflicting with WHPG on port `5432`.
 
@@ -20,8 +20,5 @@ ansible-playbook -i inventory-with-standby-and-monitoring.yml playbook.yml --tag
 | `pg_service` | `postgresql` | systemd service name. |
 | `wem_state_db` | `wem` | Name of the WEM state database to create. |
 | `wem_state_db_user` | `wem_admin` | PostgreSQL role to create for WEM state access. |
-| `wem_state_db_password` | `""` | Password for `wem_state_db_user`. Leave empty to use trust auth when the database is local. Required when `wem_state_db_host` is not on localhost. |
-| `temporal_db_name` | `temporal` | Temporal main persistence database name. |
-| `temporal_visibility_db_name` | `temporal_visibility` | Temporal visibility database name. |
-| `temporal_db_user` | `temporal` | PostgreSQL role to create for Temporal persistence. |
-| `temporal_db_password` | `""` | Password for `temporal_db_user`. Leave empty to use trust auth when the database is local. Required when `temporal_db_host` is not on localhost. |
+| `wem_state_db_password` | `""` | Password for `wem_state_db_user`. Required unless trust auth is in effect for loopback. |
+| `wem_state_db_local_trust` | `""` | Loopback authentication. Empty leaves `pg_hba.conf` as it is: a new install uses password auth and an existing install keeps what it has, including trust. `true` sets trust on `127.0.0.1` and `::1` (empty password allowed; the role prints a warning). `false` requires passwords and replaces trust. |

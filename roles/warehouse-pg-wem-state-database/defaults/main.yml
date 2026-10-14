@@ -17,18 +17,15 @@ wem_state_db_host: "127.0.0.1"
 wem_state_db_port: "{{ pg_port }}"
 wem_state_db: "wem"
 wem_state_db_user: "wem_admin"
-# Use a password for the WEM state database user. Leave empty to use trust auth
-# (pg_hba.conf must allow it and postgres is installed locally).
-# Set via vault or -e for production.
+# Password for the WEM state database user. Required unless trust auth is in
+# effect for loopback (see wem_state_db_local_trust). 
 wem_state_db_password: ""
 
-# Temporal databases and user — must match temporal role defaults
-temporal_db_host: "127.0.0.1"
-temporal_db_port: "{{ pg_port }}"
-temporal_db_name: "temporal"
-temporal_visibility_db_name: "temporal_visibility"
-temporal_db_user: "temporal"
-# Use a password for the Temporal database user. Leave empty to use trust auth
-# (pg_hba.conf must allow it and postgres is installed locally).
-# Set via vault or -e for production.
-temporal_db_password: ""
+# Authentication for loopback (127.0.0.1 and ::1) connections to the state DB:
+#   ""       leave pg_hba.conf as it is: a new install uses password auth, and
+#            an existing install keeps whatever it has, including trust
+#   true     trust on loopback; the password may be empty (anyone with a shell
+#.           on the host can then connect to the state database)
+#   false    password auth on loopback, replacing trust if present; a password
+#            is required
+wem_state_db_local_trust: ""

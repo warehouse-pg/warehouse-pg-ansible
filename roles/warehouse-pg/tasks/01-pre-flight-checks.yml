@@ -159,7 +159,7 @@
       - whpg_resource_groups is not mapping
     fail_msg: "whpg_resource_groups must be a list."
   when:
-    - whpg_resource_management == 'group'
+    - whpg_resource_management in ['group', 'group-v2']
     - whpg_resource_groups is defined
     - whpg_resource_groups | length > 0
 
@@ -199,7 +199,7 @@
     fail_msg: "Invalid whpg_resource_groups entry: {{ item }}"
   loop: "{{ whpg_resource_groups }}"
   when:
-    - whpg_resource_management == 'group'
+    - whpg_resource_management in ['group', 'group-v2']
     - whpg_resource_groups is defined
     - whpg_resource_groups | length > 0
 

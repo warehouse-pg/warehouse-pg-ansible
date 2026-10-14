@@ -8,6 +8,8 @@
 
 - name: Install the repository if it does not exist
   when: not edb_repo_status.stat.exists
+  become: true
+  any_errors_fatal: true
   block:
 
     - name: Download EDB repository install script
@@ -16,7 +18,6 @@
         url_username: "token"
         url_password: "{{ edb_token }}"
         force_basic_auth: true
-        return_content: true
         dest: /root/edb_setup.rpm.sh
         mode: "0700"
         timeout: 300
@@ -29,8 +30,6 @@
 
     - name: Execute EDB repository install script
       ansible.builtin.command: /root/edb_setup.rpm.sh
-      become: true
-      become_user: root
       changed_when: true
       throttle: "{{ serial_operations }}"
       timeout: 300
@@ -39,15 +38,8 @@
       retries: 10
       delay: 5
 
-    - name: Remove install script
-      ansible.builtin.file:
-        path: /root/edb_setup.rpm.sh
-        state: absent
-
     - name: Refresh repository
       ansible.builtin.command: yum makecache
-      become: true
-      become_user: root
       changed_when: true
       throttle: "{{ serial_operations }}"
       timeout: 300
@@ -55,3 +47,23 @@
       until: _edb_refresh is succeeded
       retries: 10
       delay: 5
+
+  rescue:
+
+    # The repository is removed either when the installation fails, or when
+    # the cache refresh fails - it is unclear why it failed, let's start again
+    - name: Remove EDB repository file after failed installation
+      ansible.builtin.file:
+        path: "/etc/yum.repos.d/enterprisedb-{{ edb_repository }}.repo"
+        state: absent
+
+    - name: Abort the playbook
+      ansible.builtin.fail:
+        msg: "Installing the EDB repository failed, aborting."
+
+  always:
+
+    - name: Remove install script
+      ansible.builtin.file:
+        path: /root/edb_setup.rpm.sh
+        state: absent

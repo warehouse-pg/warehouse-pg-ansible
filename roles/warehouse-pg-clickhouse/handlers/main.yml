@@ -1,0 +1,8 @@
+---
+
+- name: Restart clickhouse-server
+  ansible.builtin.command:
+    cmd: "clickhouse restart"
+  changed_when: true
+  become: true
+  become_user: root

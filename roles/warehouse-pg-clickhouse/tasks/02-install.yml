@@ -1,0 +1,11 @@
+---
+
+- name: Install ClickHouse server and client packages
+  ansible.builtin.dnf:
+    name:
+      - "{{ clickhouse_server_package }}{{ '-' ~ clickhouse_version if clickhouse_version else '' }}"
+      - "{{ clickhouse_client_package }}{{ '-' ~ clickhouse_version if clickhouse_version else '' }}"
+    state: "{{ _clickhouse_dnf_state }}"
+  become: true
+  become_user: root
+  timeout: "{{ DNF_TIMEOUT }}"

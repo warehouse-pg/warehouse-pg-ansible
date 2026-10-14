@@ -36,7 +36,7 @@
     line: "{{ item }}"
     state: present
   loop:
-    - "source /usr/local/greenplum-db/greenplum_path.sh"
+    - "source {{ greenplum_path }}"
     - "psql postgres"
     - "sudo /bin/bash --login"
     - "gpstart -a"

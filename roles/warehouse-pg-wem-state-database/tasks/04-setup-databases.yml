@@ -24,24 +24,3 @@
         login_port: "{{ wem_state_db_port }}"
         state: present
       become_user: postgres
-
-- name: Create Temporal database user
-  ansible.builtin.include_tasks: 04-create-role.yml
-  vars:
-    db_user: "{{ temporal_db_user }}"
-    db_password: "{{ temporal_db_password }}"
-    db_port: "{{ pg_port }}"
-
-- name: Create Temporal main database
-  ansible.builtin.include_tasks: 04-create-db.yml
-  vars:
-    db_name: "{{ temporal_db_name }}"
-    db_user: "{{ temporal_db_user }}"
-    db_port: "{{ pg_port }}"
-
-- name: Create Temporal visibility database
-  ansible.builtin.include_tasks: 04-create-db.yml
-  vars:
-    db_name: "{{ temporal_visibility_db_name }}"
-    db_user: "{{ temporal_db_user }}"
-    db_port: "{{ pg_port }}"

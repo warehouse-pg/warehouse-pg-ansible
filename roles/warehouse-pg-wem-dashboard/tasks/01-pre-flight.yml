@@ -27,15 +27,6 @@
       WarehousePG cluster (group_vars, host_vars, or -e).
   when: wem_upgrade != 'absent'
 
-- name: Assert WHPG connection user is set
-  ansible.builtin.assert:
-    that:
-      - whpg_user | length > 0
-    fail_msg: >-
-      whpg_user is empty. Set the database user WEM connects to
-      the WarehousePG cluster as.
-  when: wem_upgrade != 'absent'
-
 - name: Assert WEM state connection host is set
   ansible.builtin.assert:
     that:
@@ -54,13 +45,16 @@
       if you overrode it, provide a non-empty value.
   when: wem_upgrade != 'absent'
 
-- name: Assert WHPG connection password is set
+- name: Assert ClickHouse credentials are set
   ansible.builtin.assert:
     that:
-      - whpg_password is defined
-      - whpg_password | string | length > 0
-    fail_msg: "whpg_password is empty. Set the password for whpg_user in the inventory."
+      - wem_clickhouse_url is search('^clickhouse://[^:@/]+:[^@]+@')
+    fail_msg: >-
+      wem_clickhouse_url has no ClickHouse user or password. Set
+      clickhouse_user and clickhouse_password in the inventory, or set
+      wem_clickhouse_url directly.
   when: wem_upgrade != 'absent'
+  no_log: true
 
 - name: Assert WEM state database user password is set when state DB is remote
   ansible.builtin.assert:

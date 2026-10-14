@@ -26,8 +26,8 @@ wem_upgrade: "install-but-no-automatic-upgrades"
 
 # Filesystem locations created by the RPM
 wem_install_dir: "/usr/local/greenplum-db/wem"
-wem_config_dir: "/etc/wem"
-wem_config_file: "/etc/wem/wem.conf"
+wem_config_dir: "/etc/edb/wem"
+wem_config_file: "/etc/edb/wem/wem.conf"
 wem_log_dir: "/var/log/wem"
 
 # Unix user and group the RPM creates files for. Same variable names as the
@@ -35,6 +35,9 @@ wem_log_dir: "/var/log/wem"
 # WEM is co-located with WarehousePG on a coordinator or standby.
 WHPG_UNIX_USER: "gpadmin"
 WHPG_UNIX_GROUP: "gpadmin"
+
+# Group of the dedicated service account the RPM creates; owns wem.conf (0640).
+wem_service_group: "wem"
 
 # Systemd service management
 wem_service_name: "wem"
@@ -47,8 +50,15 @@ wem_service_started: true
 # Leave empty to have the role auto-generate a 32 byte base64 secret
 # the first time the role runs. Provide a value to manage it explicitly.
 wem_cookie_secret: ""
-# Set to "1" (or any non-empty value) when the dashboard is not served over HTTPS
-wem_insecure_cookies: "1"
+# Cookies are secure unless wem.conf says otherwise.
+# Insecure cookies might be necessary for testing systems.
+# WEM treats any non-empty WEM_INSECURE_COOKIES as "insecure", the RPM ships none.
+#   ""       leave wem.conf as it is: a new install gets secure cookies, and an
+#            existing install keeps the WEM_INSECURE_COOKIES line it already has
+#   "1"      write WEM_INSECURE_COOKIES=1 (dashboard served over plain HTTP)
+#   "false"  empty the value (also "0" or "no"): secure cookies
+wem_insecure_cookies: ""
+_wem_secure_cookies_requested: "{{ wem_insecure_cookies | string | lower in ['false', '0', 'no'] }}"
 
 # -----------------------------------------------------------------------------
 # Security: initial admin password
@@ -96,9 +106,10 @@ wem_state_db_user: "wem_admin"
 # -----------------------------------------------------------------------------
 wem_port: 8080
 # Callback base URL agents use to reach this WEM instance.
-# Defaults to the Ansible connection address + wem_port.
+# Defaults to this host's own ip_address (this role always runs on the
+# wem_stack host, i.e. the WEM host itself) + wem_port.
 # Override with an explicit FQDN or IP if ansible_host is not agent-reachable.
-wem_agent_callback_base_url: "http://{{ ansible_host }}:{{ wem_port }}"
+wem_agent_callback_base_url: "http://{{ hostvars[inventory_hostname]['ip_address'] }}:{{ wem_port }}"
 
 # -----------------------------------------------------------------------------
 # Performance (optional)
@@ -107,39 +118,25 @@ wem_agent_callback_base_url: "http://{{ ansible_host }}:{{ wem_port }}"
 wem_high_load_mode: ""
 
 # -----------------------------------------------------------------------------
-# Observability (optional)
+# Observability: ClickHouse (optional)
 # -----------------------------------------------------------------------------
-alertmanager_host: "localhost"
-alertmanager_port: 9093
-loki_host: "localhost"
-loki_port: 3100
-prometheus_host: "localhost"
-prometheus_port: 9090
+# Format: clickhouse://user:password@host:port
+clickhouse_host: "127.0.0.1"
+clickhouse_tcp_port: 9000
+# ClickHouse user and password.
+clickhouse_user: ""
+clickhouse_password: ""
 
-wem_alertmanager_url: "http://{{ alertmanager_host }}:{{ alertmanager_port }}"
-wem_loki_url: "http://{{ loki_host }}:{{ loki_port }}"
-wem_prometheus_url: "http://{{ prometheus_host }}:{{ prometheus_port }}"
+# User and password are percent-encoded.
+# Jinja2's urlencode filter leaves "/" as is, so "/" is replaced with %2F
+# explicitly; without it a "/" in a password ends the credentials part of the URL.
+wem_clickhouse_url: "clickhouse://{{ clickhouse_user | urlencode | replace('/', '%2F') }}:{{ clickhouse_password | urlencode | replace('/', '%2F') }}@{{ clickhouse_host }}:{{ clickhouse_tcp_port }}"
 
-# Log level for the exporter: debug, info, warn, error
-wem_exporter_log_level: ""
-# Interval/timeout for remote write operations (e.g. 15s, 1m, 5m)
-wem_exporter_remote_write_interval: ""
-wem_exporter_remote_write_timeout: ""
-# When "true", WEM actively pushes warehousepg_observability_* metrics to
-# Prometheus based on wem_exporter_remote_write_* settings above.
-wem_exporter_remote_write_enabled: ""
-
-# -----------------------------------------------------------------------------
-# Remote write receiver (Grafana Alloy → WEM) (optional)
-# -----------------------------------------------------------------------------
-# Accept Prometheus remote write at POST /api/v1/write. Leave empty to keep
-# the shipped commented examples in /etc/wem/wem.conf.
-wem_remote_write_receiver_enabled: ""
-wem_remote_write_receiver_port: ""
-wem_remote_write_receiver_ttl: ""
-# Bearer token required on POST /api/v1/write. Generate with
-# `openssl rand -base64 32` and configure the same value in Grafana Alloy.
-wem_remote_write_receiver_token: ""
+# OTLP gateway endpoint written to OTEL_GATEWAY_ENDPOINT in wem.conf.
+# Derived in playbook from the monitoring_host IP when gateway_collector_enabled
+# is true on that host.
+# Override in inventory to use a different host/port.
+gateway_collector_endpoint: ""
 
 # -----------------------------------------------------------------------------
 # Query monitor UI
@@ -150,7 +147,7 @@ wem_long_running_threshold: ""
 # -----------------------------------------------------------------------------
 # PXF integration (optional)
 # -----------------------------------------------------------------------------
-# These knobs are shipped commented in /etc/wem/wem.conf; set the matching
+# These knobs are shipped commented in /etc/edb/wem/wem.conf; set the matching
 # variable to emit and uncomment the line. The RPM's `wem configure-pxf-sandbox`
 # helper auto-detects most of these — only set them to force a specific value.
 #
@@ -169,10 +166,3 @@ wem_whpg_pxf_op_timeout_seconds: ""
 # Set to "true/false" to allow the wem service to start as root (containerized or
 # legacy-migration deployments). Logged as WARNING on every restart.
 wem_whpg_allow_root: ""
-
-# -----------------------------------------------------------------------------
-# Temporal connection
-# -----------------------------------------------------------------------------
-# Address of the Temporal frontend (host:port) WEM connects to.
-# Defaults to localhost when Temporal is co-located on the same host.
-temporal_address: "localhost:7233"

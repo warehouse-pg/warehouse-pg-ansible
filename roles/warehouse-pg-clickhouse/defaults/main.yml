@@ -1,0 +1,62 @@
+---
+
+# ClickHouse installation via EDB repository
+# Packages installed: edb-clickhouse-server edb-clickhouse-client
+
+DNF_TIMEOUT: 120
+
+clickhouse_server_package: "edb-clickhouse-server"
+clickhouse_client_package: "edb-clickhouse-client"
+
+# Pin a specific version (e.g. "24.3.1"). Leave empty to install whatever the
+# configured EDB repository provides.
+clickhouse_version: ""
+
+# Accepted values:
+#   "install-but-no-automatic-upgrades" — install if missing, never auto-upgrade
+#   "always-upgrade-to-latest-minor"    — upgrade to latest on every run
+#   "absent"                            — remove the packages
+clickhouse_upgrade: "install-but-no-automatic-upgrades"
+
+# -----------------------------------------------------------------------------
+# Network
+# -----------------------------------------------------------------------------
+# Addresses ClickHouse binds to. Defaults to loopback (for clients on the same
+# host) plus the host's private ip_address from inventory (for WEM, which
+# connects via that IP).
+# Override in inventory or with -e, e.g.:
+#   "clickhouse_listen_hosts": ["127.0.0.1", "10.0.1.45"]
+clickhouse_listen_hosts:
+  - "127.0.0.1"
+  - "{{ ip_address | default('') }}"
+clickhouse_http_port: 8123
+clickhouse_tcp_port: 9000
+
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
+clickhouse_log_level: "information"
+clickhouse_log_dir: "/var/log/clickhouse-server"
+clickhouse_log_file: "{{ clickhouse_log_dir }}/clickhouse-server.log"
+clickhouse_error_log_file: "{{ clickhouse_log_dir }}/clickhouse-server.err.log"
+
+# -----------------------------------------------------------------------------
+# Auth
+# -----------------------------------------------------------------------------
+# The shipped `default` user keeps
+# its empty password but accepts loopback connections only — so
+# clickhouse_user must not be "default".
+
+# Set them in the cluster vars (or on the wem_host entry) in inventory:
+#   "clickhouse_user": "wem_ch"
+#   "clickhouse_password": "your-password"
+#
+# clickhouse_user: ""
+# clickhouse_password: ""
+clickhouse_password_min_length: 11
+
+# -----------------------------------------------------------------------------
+# Service
+# -----------------------------------------------------------------------------
+clickhouse_service_name: "clickhouse-server"
+clickhouse_service_started: true

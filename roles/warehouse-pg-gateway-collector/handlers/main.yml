@@ -1,0 +1,9 @@
+---
+
+- name: Restart edb-otelcol
+  ansible.builtin.systemd:
+    name: "{{ otelcol_gateway_service_name }}"
+    state: restarted
+    daemon_reload: true
+  become: true
+  become_user: root

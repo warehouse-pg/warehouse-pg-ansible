@@ -1,0 +1,35 @@
+---
+
+- name: Assert OS is Red Hat based
+  ansible.builtin.assert:
+    that:
+      - ansible_facts["os_family"] == "RedHat"
+    fail_msg: "warehouse-pg-gateway-collector role only supports Red Hat based operating systems."
+
+- name: Assert otelcol_gateway_upgrade is a valid value
+  ansible.builtin.assert:
+    that:
+      - otelcol_gateway_upgrade is defined
+      - otelcol_gateway_upgrade is string
+      - otelcol_gateway_upgrade in ['install-but-no-automatic-upgrades', 'always-upgrade-to-latest-minor', 'absent']
+    fail_msg: >-
+      otelcol_gateway_upgrade must be 'install-but-no-automatic-upgrades',
+      'always-upgrade-to-latest-minor', or 'absent'
+      (got '{{ otelcol_gateway_upgrade | default('undefined') }}').
+
+- name: Map otelcol_gateway_upgrade to dnf state
+  ansible.builtin.set_fact:
+    _otelcol_dnf_state: >-
+      {{ 'latest' if otelcol_gateway_upgrade == 'always-upgrade-to-latest-minor'
+         else ('absent' if otelcol_gateway_upgrade == 'absent' else 'present') }}
+
+- name: Assert ClickHouse credentials are set
+  ansible.builtin.assert:
+    that:
+      - otelcol_clickhouse_endpoint is search('^clickhouse://[^:@/]+:[^@]+@')
+    fail_msg: >-
+      otelcol_clickhouse_endpoint has no ClickHouse user or password. Set
+      clickhouse_user and clickhouse_password in the inventory, or set
+      otelcol_clickhouse_endpoint directly.
+  when: otelcol_gateway_upgrade != 'absent'
+  no_log: true

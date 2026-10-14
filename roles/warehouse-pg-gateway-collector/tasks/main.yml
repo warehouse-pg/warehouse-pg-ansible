@@ -1,0 +1,19 @@
+---
+
+# The role does nothing unless gateway_collector_enabled is true for this host.
+- name: Deploy OTel gateway collector
+  when: gateway_collector_enabled | bool
+  block:
+    - name: Run pre-flight checks
+      ansible.builtin.import_tasks: 01-pre-flight.yml
+
+    - name: Install edb-otelcol package
+      ansible.builtin.import_tasks: 02-install.yml
+
+    - name: Configure gateway collector
+      ansible.builtin.import_tasks: 03-configure.yml
+      when: otelcol_gateway_upgrade != 'absent'
+
+    - name: Manage gateway collector service
+      ansible.builtin.import_tasks: 04-service.yml
+      when: otelcol_gateway_upgrade != 'absent'

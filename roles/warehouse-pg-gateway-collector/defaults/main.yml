@@ -1,0 +1,71 @@
+---
+
+# Gateway OTel Collector (edb-otelcol)
+#
+# Receives OTLP telemetry from all cluster node agents and forwards to ClickHouse.
+# Installed on monitoring_host (same host as ClickHouse; falls back to wem_host
+# when monitoring_host is not set) and writes to ClickHouse over 127.0.0.1.
+#
+# Enable via inventory, on the monitoring_host entry or in the cluster vars:
+#   gateway_collector_enabled: true
+
+# Set to true in inventory to install and configure the gateway collector.
+gateway_collector_enabled: false
+
+DNF_TIMEOUT: 120
+
+otelcol_gateway_package: "edb-otelcol"
+# Pin a specific version (e.g. "0.158.0"). Leave empty to install whatever the
+# configured EDB repository provides.
+otelcol_gateway_version: ""
+
+# Accepted values:
+#   "install-but-no-automatic-upgrades" — install if missing, never auto-upgrade
+#   "always-upgrade-to-latest-minor"    — upgrade to latest on every run
+#   "absent"                            — remove the package
+otelcol_gateway_upgrade: "install-but-no-automatic-upgrades"
+
+# -----------------------------------------------------------------------------
+# OTLP receiver endpoints
+# -----------------------------------------------------------------------------
+otelcol_gateway_grpc_endpoint: "0.0.0.0:4317"
+otelcol_gateway_http_endpoint: "0.0.0.0:4318"
+
+# -----------------------------------------------------------------------------
+# ClickHouse exporter
+# -----------------------------------------------------------------------------
+# Derived from clickhouse_user / clickhouse_password set in inventory (the
+# warehouse-pg-clickhouse role creates this user). Credentials are embedded in
+# the URL, percent-encoded.
+# Override otelcol_clickhouse_endpoint only when ClickHouse is on a different
+# host than the gateway.
+# User and password are percent-encoded. Jinja2's urlencode filter leaves "/"
+# as is, so "/" is replaced with %2F explicitly; without it a "/" in a password
+# ends the credentials part of the URL.
+otelcol_clickhouse_endpoint: "clickhouse://{{ clickhouse_user | default('') | urlencode | replace('/', '%2F') }}:{{ clickhouse_password | default('') | urlencode | replace('/', '%2F') }}@{{ clickhouse_host | default('127.0.0.1') }}:{{ clickhouse_tcp_port | default(9000) }}"
+otelcol_clickhouse_database: "acp_observability"
+otelcol_clickhouse_timeout: "5s"
+
+# -----------------------------------------------------------------------------
+# Prometheus exporter
+# -----------------------------------------------------------------------------
+# Address the Prometheus scrape endpoint (/metrics) listens on. Loopback only by
+# default — set to "<private-ip>:8889" to allow scraping from another host.
+otelcol_prometheus_endpoint: "127.0.0.1:8889"
+
+# -----------------------------------------------------------------------------
+# Batch processor
+# -----------------------------------------------------------------------------
+otelcol_batch_timeout: "5s"
+otelcol_batch_send_size: 8192
+
+# -----------------------------------------------------------------------------
+# Config file path
+# -----------------------------------------------------------------------------
+otelcol_gateway_config_file: "/etc/edb/otelcol/config.yaml"
+
+# -----------------------------------------------------------------------------
+# Service
+# -----------------------------------------------------------------------------
+otelcol_gateway_service_name: "edb-otelcol"
+otelcol_gateway_service_started: true

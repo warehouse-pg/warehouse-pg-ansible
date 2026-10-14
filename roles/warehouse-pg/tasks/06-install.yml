@@ -84,7 +84,7 @@
   ansible.builtin.shell:
     cmd: >-
       awk -F= '/^COORDINATOR_DIRECTORY=/ {sub(/^COORDINATOR_DIRECTORY=/,""); print; exit}'
-      {{ _whpg_user_info.home }}/gpinitsystem_config_{{ cluster_name }}
+      /home/{{ WHPG_UNIX_USER }}/gpinitsystem_config_{{ cluster_name }}
   register: _whpg_coordinator_directory
   changed_when: false
   become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
@@ -96,7 +96,7 @@
   ansible.builtin.shell:
     cmd: >-
       awk -F= '/^SEG_PREFIX=/ {sub(/^SEG_PREFIX=/,""); print; exit}'
-      {{ _whpg_user_info.home }}/gpinitsystem_config_{{ cluster_name }}
+      /home/{{ WHPG_UNIX_USER }}/gpinitsystem_config_{{ cluster_name }}
   register: _whpg_seg_prefix_value
   changed_when: false
   become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"

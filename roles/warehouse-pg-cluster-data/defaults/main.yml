@@ -7,4 +7,4 @@ WHPG_UNIX_USER: "gpadmin"
 WHPG_UNIX_GROUP: "gpadmin"
 
 # Path to the greenplum_path.sh sourced before running psql/gpstate/etc.
-greenplum_path: "/usr/local/greenplum-db/greenplum_path.sh"
+greenplum_path: "/usr/edb/whpg7/greenplum_path.sh"

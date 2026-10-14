@@ -1,0 +1,65 @@
+---
+
+- name: Assert OS is Red Hat based
+  ansible.builtin.assert:
+    that:
+      - ansible_facts["os_family"] == "RedHat"
+    fail_msg: "warehouse-pg-clickhouse role only supports Red Hat based operating systems."
+
+- name: Assert clickhouse_upgrade is a valid value
+  ansible.builtin.assert:
+    that:
+      - clickhouse_upgrade is defined
+      - clickhouse_upgrade is string
+      - clickhouse_upgrade in ['install-but-no-automatic-upgrades', 'always-upgrade-to-latest-minor', 'absent']
+    fail_msg: >-
+      clickhouse_upgrade must be 'install-but-no-automatic-upgrades',
+      'always-upgrade-to-latest-minor', or 'absent'
+      (got '{{ clickhouse_upgrade | default('undefined') }}').
+
+- name: Map clickhouse_upgrade to dnf state
+  ansible.builtin.set_fact:
+    _clickhouse_dnf_state: >-
+      {{ 'latest' if clickhouse_upgrade == 'always-upgrade-to-latest-minor'
+         else ('absent' if clickhouse_upgrade == 'absent' else 'present') }}
+
+# clickhouse_user and clickhouse_password must be explicitly set in inventory.
+- name: Assert clickhouse_user is defined in inventory
+  ansible.builtin.assert:
+    that:
+      - clickhouse_user is defined
+      - clickhouse_user is string
+      - clickhouse_user is match('^[A-Za-z_][A-Za-z0-9_]*$')
+      - clickhouse_user != 'default'
+    fail_msg: >-
+      clickhouse_user is not set/ is 'default', or contains characters other
+      than letters, digits and underscore.
+      Add it to the wem_host in inventory, e.g. "clickhouse_user": "wem_ch".
+  when: clickhouse_upgrade != 'absent'
+  run_once: true
+
+- name: Assert clickhouse_password is defined in inventory
+  ansible.builtin.assert:
+    that:
+      - clickhouse_password is defined
+      - clickhouse_password is string
+      - clickhouse_password | length >= clickhouse_password_min_length | int
+    fail_msg: >-
+      clickhouse_password is not set or is shorter than
+      {{ clickhouse_password_min_length }} characters.
+      Add it to the wem_host in inventory.
+  when: clickhouse_upgrade != 'absent'
+  run_once: true
+  no_log: true
+
+- name: Assert ClickHouse listen addresses are set
+  ansible.builtin.assert:
+    that:
+      - clickhouse_listen_hosts | length > 0
+      - clickhouse_listen_hosts | select('string') | reject('equalto', '') | list | length == clickhouse_listen_hosts | length
+    fail_msg: >-
+      clickhouse_listen_hosts is empty or contains an empty entry. The default
+      uses ip_address from inventory — set ip_address on this host or
+      override clickhouse_listen_hosts.
+  when: clickhouse_upgrade != 'absent'
+

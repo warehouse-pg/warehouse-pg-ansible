@@ -284,7 +284,7 @@
       become_user: "{{ WHPG_UNIX_USER }}"
 
 - name: Sync Resource Groups with database
-  when: whpg_resource_management == 'group'
+  when: whpg_resource_management in ['group', 'group-v2']
   block:
     - name: Fetch existing resource groups with current settings
       ansible.builtin.shell:
