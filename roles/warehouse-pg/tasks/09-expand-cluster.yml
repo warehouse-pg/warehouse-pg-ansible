@@ -175,6 +175,7 @@
           export COORDINATOR_DATA_DIRECTORY={{ _whpg_coordinator_data_dir | trim }}
           gpexpand -i {{ _whpg_user_info.home }}/cluster_expand_input_{{ cluster_name }}
         executable: /bin/bash
+        chdir: "{{ _whpg_user_info.home }}"
       become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
       become_user: "{{ WHPG_UNIX_USER }}"
       when: (_whpg_gpexpand_schema_check.stdout | trim) | length == 0
@@ -231,6 +232,7 @@
           export COORDINATOR_DATA_DIRECTORY={{ _whpg_coordinator_data_dir | trim }}
           gpexpand
         executable: /bin/bash
+        chdir: "{{ _whpg_user_info.home }}"
       become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
       become_user: "{{ WHPG_UNIX_USER }}"
       when:
@@ -318,6 +320,7 @@
           export COORDINATOR_DATA_DIRECTORY={{ _whpg_coordinator_data_dir | trim }}
           echo n | gpexpand -c -s
         executable: /bin/bash
+        chdir: "{{ _whpg_user_info.home }}"
       become: "{{ ansible_facts['user_id'] != WHPG_UNIX_USER }}"
       become_user: "{{ WHPG_UNIX_USER }}"
       when:
