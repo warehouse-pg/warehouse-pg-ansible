@@ -75,6 +75,8 @@ The full list is in the main [README](../../README.md#role-warehouse-pg). The mo
 | `whpg_role` | _(none - required)_ | Role of the host: `coordinator`, `standby` or `segment`. |
 | `WHPG_UNIX_USER` | `gpadmin` | Unix user that owns the installation. |
 | `WHPG_UNIX_GROUP` | `gpadmin` | Unix group of that user. |
+| `whpg_manage_etc_hosts` | `true` | Add the cluster hosts to `/etc/hosts`. |
+| `whpg_manage_hostname` | `true` | Set the system hostname from `hostname`. |
 | `whpg_major_version` | `7` | WarehousePG major version, `6` or `7`. |
 | `whpg_seg_num` | `2` | Primary segments per host. Only evaluated at cluster creation. |
 | `whpg_port` | `5432` | Coordinator port. |

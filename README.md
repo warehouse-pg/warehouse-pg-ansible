@@ -1085,6 +1085,8 @@ This section lists every non-internal variable referenced by the roles. Variable
 | `whpg_default_database` | `""` | Default database name. Must be a valid PostgreSQL identifier (1--63 chars, starts with letter or underscore) when non-empty. |
 | `whpg_install_packages` | `true` | Whether the role should install packages. When `false`, the user is expected to install them. |
 | `whpg_install_backup` | `true` | Install the `whpg-backup` package. Set to `false` to skip it. |
+| `whpg_manage_etc_hosts` | `true` | Add the cluster hosts to `/etc/hosts`. Set to `false` when something else already manages `/etc/hosts`. |
+| `whpg_manage_hostname` | `true` | Set the system hostname from the `hostname` variable. Set to `false` when something else manages the hostname, or where it cannot be changed (for example in containers). |
 | `whpg_resource_management` | `"group"` | Workload manager: `queue`, `group`, or `group-v2`. Maps to the `gp_resource_manager` GUC. See the "Workload management" section. |
 | `whpg_resource_groups` | `[]` | List of resource group definitions applied when `whpg_resource_management` is `group` or `group-v2`. Empty by default. |
 | `whpg_resource_queues` | `[]` | List of resource queue definitions applied when `whpg_resource_management` is `queue`. Empty by default. |

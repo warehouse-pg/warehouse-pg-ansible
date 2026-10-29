@@ -3,6 +3,11 @@
 WHPG_UNIX_USER: "gpadmin"
 WHPG_UNIX_GROUP: "gpadmin"
 
+# Set these to false when another tool (for example the framework that
+# generated the inventory) already manages /etc/hosts and the hostname.
+whpg_manage_etc_hosts: true
+whpg_manage_hostname: true
+
 # Path to the data directory on every cluster server
 # This setting can't be empty, and the directory must already exist
 whpg_data_directory: ""

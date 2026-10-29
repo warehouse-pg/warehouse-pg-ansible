@@ -14,6 +14,7 @@
       {% endfor %}
   become: true
   become_user: root
+  when: whpg_manage_etc_hosts | bool
 
 - name: Set system hostname
   ansible.builtin.hostname:
@@ -21,6 +22,7 @@
     use: systemd
   become: true
   become_user: root
+  when: whpg_manage_hostname | bool
 
 - name: Check whether WHPG_UNIX_USER already has an SSH private key
   ansible.builtin.stat:
