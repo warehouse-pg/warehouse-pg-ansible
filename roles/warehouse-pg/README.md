@@ -48,7 +48,7 @@ ansible-playbook -i <inventory> playbook.yml --tags update-pg-hba
 | `03-hostfiles.yml` | Writes the per-cluster hostfiles. Adds or removes the standby hostfile depending on the inventory. |
 | `04-os.yml` | Updates `/etc/hosts` and prepares the OS (cgroups for resource groups). |
 | `05-ssh-keyexchange.yml` | Exchanges SSH public keys and host keys across the cluster, then tests passwordless login from coordinator and standby. |
-| `06-install.yml` | Installs the packages and creates the data directories. |
+| `06-install.yml` | Installs the packages (including `procps-ng`, which the WarehousePG utilities need) and creates the data directories. |
 | `07-initialize-database.yml` | Initializes the database, applies `pg_hba.conf` customizations, reconciles the standby, syncs resource groups or queues (coordinator only). |
 | `08-extensions.yml` | Installs or removes the extension packages. |
 | `10-roles.yml` | Creates or updates database roles from `whpg_db_roles` (tag `whpgroles`). |

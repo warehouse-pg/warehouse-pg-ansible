@@ -162,6 +162,19 @@
 - name: Install warehouse-pg and backup packages
   when: whpg_install_packages | bool
   block:
+    # gpstart, gpstop and gpstate call ps, pgrep and pwdx (procps-ng) to
+    # check whether the coordinator, standby and segments are running, but
+    # the warehouse-pg package does not depend on procps-ng. Minimal
+    # images (containers, some cloud images) lack it, and gpstart then
+    # reports a running standby coordinator as failed.
+    - name: Install procps-ng, required by the WarehousePG utilities
+      ansible.builtin.dnf:
+        name: procps-ng
+        state: present
+      become: true
+      become_user: root
+      timeout: "{{ DNF_TIMEOUT }}"
+
     - name: Install warehouse-pg package
       ansible.builtin.dnf:
         name: "warehouse-pg-{{ whpg_major_version }}"
