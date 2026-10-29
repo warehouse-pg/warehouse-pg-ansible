@@ -79,19 +79,23 @@
              | unique
              | list }}
 
+    # The previously-existing hosts come from gp_segment_configuration, not
+    # from cluster_hostfile_segments: 03-hostfiles.yml rewrites that file
+    # with the new inventory before this expansion has run, so after a
+    # failed expansion attempt it already lists hosts that were never added.
     - name: Abort if previously-existing segment hosts are not in their original order
       ansible.builtin.fail:
         msg: >-
           Previously-existing segment hosts in gp_segment_configuration are no
           longer in their original inventory order. Aborting expansion.
           Database order (previous hosts only):
-          {{ _whpg_segments_ordered | select('in', _previous_segments) | list | join(', ') }}.
+          {{ _whpg_segments_ordered | select('in', _whpg_existing_segments_sorted) | list | join(', ') }}.
           Inventory order (previous hosts only):
-          {{ _cluster_hosts_segments | select('in', _previous_segments) | list | join(', ') }}.
+          {{ _cluster_hosts_segments | select('in', _whpg_existing_segments_sorted) | list | join(', ') }}.
       when:
-        - _previous_segments | length > 0
-        - (_whpg_segments_ordered | select('in', _previous_segments) | list)
-          != (_cluster_hosts_segments | select('in', _previous_segments) | list)
+        - _whpg_existing_segments_sorted | length > 0
+        - (_whpg_segments_ordered | select('in', _whpg_existing_segments_sorted) | list)
+          != (_cluster_hosts_segments | select('in', _whpg_existing_segments_sorted) | list)
 
     - debug: msg="Segment operation{{':'}} expand cluster"
 
