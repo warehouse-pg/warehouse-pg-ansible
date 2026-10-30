@@ -7,7 +7,7 @@ The role:
 - installs the server and client packages,
 - writes the listen addresses, ports and logger settings to `/etc/clickhouse-server/config.d/99-ansible-network.xml` and `99-ansible-logger.xml`,
 - creates the `clickhouse_user` user with `clickhouse_password` in `/etc/clickhouse-server/users.d/ansible-users.xml`, and restricts the shipped `default` user (empty password) to loopback connections (`127.0.0.1` and `::1`),
-- starts the service with `clickhouse start`.
+- starts and enables the `clickhouse-server` systemd unit (taking over a server started earlier with `clickhouse start`).
 
 The shipped `users.xml` and `config.xml` are not modified, ClickHouse merges the `*.d/` override files at startup.
 
@@ -51,8 +51,8 @@ The role supports Red Hat based systems only.
 | `clickhouse_log_dir` | `/var/log/clickhouse-server` | Log directory. |
 | `clickhouse_log_file` | `<clickhouse_log_dir>/clickhouse-server.log` | Main log file. |
 | `clickhouse_error_log_file` | `<clickhouse_log_dir>/clickhouse-server.err.log` | Error log file. |
-| `clickhouse_service_name` | `clickhouse-server` | systemd service name, used for diagnostics when the start fails. |
-| `clickhouse_service_started` | `true` | `true` runs `clickhouse start`, `false` runs `clickhouse stop`. |
+| `clickhouse_service_name` | `clickhouse-server` | systemd service name the role starts, stops and restarts. |
+| `clickhouse_service_started` | `true` | `true` starts and enables the systemd unit, `false` stops and disables it. |
 | `DNF_TIMEOUT` | `120` | Maximum time (seconds) to wait for the RPM repository. |
 
 ## Package state

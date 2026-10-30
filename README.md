@@ -91,7 +91,7 @@ See [roles/warehouse-pg-wem-state-database/README.md](roles/warehouse-pg-wem-sta
 
 ### warehouse-pg-clickhouse
 
-Installs `edb-clickhouse-server` and `edb-clickhouse-client` from the EDB repository on the hosts in the `monitoring_stack` inventory group. Configures `listen_host` (loopback plus the host's private `ip_address`), `http_port`, `tcp_port`, and logger settings via `config.d/`. Creates the `clickhouse_user` user with `clickhouse_password` in `users.d/`, and restricts the shipped `default` user (empty password) to loopback connections only. Starts the service via `clickhouse start`.
+Installs `edb-clickhouse-server` and `edb-clickhouse-client` from the EDB repository on the hosts in the `monitoring_stack` inventory group. Configures `listen_host` (loopback plus the host's private `ip_address`), `http_port`, `tcp_port`, and logger settings via `config.d/`. Creates the `clickhouse_user` user with `clickhouse_password` in `users.d/`, and restricts the shipped `default` user (empty password) to loopback connections only. Starts and enables the `clickhouse-server` systemd unit.
 
 See [roles/warehouse-pg-clickhouse/README.md](roles/warehouse-pg-clickhouse/README.md) for variables, prerequisites, and details.
 

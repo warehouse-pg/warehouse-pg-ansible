@@ -1,8 +1,8 @@
 ---
 
 - name: Restart clickhouse-server
-  ansible.builtin.command:
-    cmd: "clickhouse restart"
-  changed_when: true
+  ansible.builtin.systemd:
+    name: "{{ clickhouse_service_name }}"
+    state: restarted
   become: true
   become_user: root

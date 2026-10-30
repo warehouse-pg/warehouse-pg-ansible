@@ -1,29 +1,57 @@
 ---
 
-# `clickhouse start` registers and starts the systemd unit in one step.
-- name: Start/stop clickhouse-server via clickhouse CLI
+# clickhouse-server is managed through its systemd unit, so that it starts
+# at boot and systemctl, monitoring and this role agree on its state.
+#
+# `clickhouse start` (used by earlier versions of this role) daemonizes the
+# server outside systemd and leaves the unit enabled but inactive; a later
+# `systemctl start` or a reboot then competes with that process. Hand such
+# a server over to systemd once.
+- name: Start/stop clickhouse-server via systemd
   become: true
   become_user: root
   block:
-    - name: Start clickhouse-server
+    - name: Check whether clickhouse-server is active under systemd
       ansible.builtin.command:
-        cmd: "clickhouse start"
-      register: _ch_start
-      # rc=2 means already running — treat as success
-      failed_when: _ch_start.rc not in [0, 2]
-      changed_when: _ch_start.rc == 0
-      when: clickhouse_service_started | bool
+        cmd: "systemctl is-active {{ clickhouse_service_name }}"
+      register: _ch_systemd_active
+      changed_when: false
+      failed_when: false
 
-    - name: Stop clickhouse-server
+    - name: Check whether clickhouse-server is running outside systemd
+      ansible.builtin.command:
+        cmd: "clickhouse status"
+      register: _ch_cli_status
+      changed_when: false
+      failed_when: false
+      when: _ch_systemd_active.rc != 0
+
+    - name: Stop clickhouse-server started outside systemd
       ansible.builtin.command:
         cmd: "clickhouse stop"
       changed_when: true
+      when:
+        - _ch_systemd_active.rc != 0
+        - _ch_cli_status.rc | default(1) == 0
+
+    - name: Start and enable clickhouse-server
+      ansible.builtin.systemd:
+        name: "{{ clickhouse_service_name }}"
+        state: started
+        enabled: true
+      when: clickhouse_service_started | bool
+
+    - name: Stop and disable clickhouse-server
+      ansible.builtin.systemd:
+        name: "{{ clickhouse_service_name }}"
+        state: stopped
+        enabled: false
       when: not (clickhouse_service_started | bool)
 
   rescue:
     - name: Collect clickhouse-server status
       ansible.builtin.command:
-        cmd: "clickhouse status"
+        cmd: "systemctl status {{ clickhouse_service_name }} --no-pager"
       register: _ch_status
       changed_when: false
       failed_when: false
