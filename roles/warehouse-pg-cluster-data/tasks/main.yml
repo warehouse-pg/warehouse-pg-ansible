@@ -144,7 +144,7 @@
     _host_sysctls: >-
       {{ _host_sysctls | default({})
          | combine({item.item: ((item.content | b64decode | trim)
-                                if (item.content is defined) else null)}) }}
+                                if (item.content is defined) else none)}) }}
   loop: "{{ _host_sysctls_raw.results }}"
   loop_control:
     label: "{{ item.item }}"
