@@ -26,9 +26,16 @@
          | list
          | sort }}
 
+# Without segment hosts, gpinitsystem places the segments on the
+# coordinator (see gpinitsystem_config-v7.j2), so that is where the
+# database reports them.
 - name: Build sorted list of inventory segment hosts
   ansible.builtin.set_fact:
-    _whpg_inventory_segments_sorted: "{{ _cluster_hosts_segments | sort }}"
+    _whpg_inventory_segments_sorted: >-
+      {{ (_cluster_hosts_segments
+          if _cluster_hosts_segments | length > 0
+          else _cluster_hosts_coordinator)
+         | sort }}
 
 - name: Fail if existing segment hosts are missing from new inventory
   ansible.builtin.fail:
